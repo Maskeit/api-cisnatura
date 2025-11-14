@@ -1,0 +1,26 @@
+# Framework web
+fastapi==0.121.1
+uvicorn[standard]==0.38.0
+
+# Base de datos PostgreSQL
+psycopg2-binary==2.9.11
+sqlalchemy==2.0.44
+
+# Cache y sesiones con Redis
+redis==7.0.1
+
+# Pasarela de pagos
+stripe==13.2.0
+
+# Validación de datos
+pydantic==2.12.4
+pydantic-settings==2.12.0
+
+# Herramientas adicionales
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+# Seguridad
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.2
