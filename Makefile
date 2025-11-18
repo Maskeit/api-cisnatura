@@ -7,14 +7,14 @@ build:
 	docker compose -f $(COMPOSE_FILE) build
 
 build-dev:
-	docker compose -f $(COMPOSE_DEV_FILE) build
+	docker compose -f $(COMPOSE_DEV_FILE) build -d
 
 # Desarrollo
 dev:
 	docker compose -f $(COMPOSE_DEV_FILE) up -d
 
 dev-build:
-	docker compose -f $(COMPOSE_DEV_FILE) up --build
+	docker compose -f $(COMPOSE_DEV_FILE) up -d --build
 
 dev-down:
 	docker compose -f $(COMPOSE_DEV_FILE) down
@@ -23,12 +23,22 @@ dev-down:
 prod:
 	docker compose -f $(COMPOSE_FILE) up -d
 
+down:
+	docker compose -f $(COMPOSE_FILE) down
+
+stop:
+	docker compose -f $(COMPOSE_FILE) stop
+
+stop-dev:
+	docker compose -f $(COMPOSE_DEV_FILE) stop
+
 # Utilidades
 logs:
 	docker compose -f $(COMPOSE_DEV_FILE) logs -f
 
 logs-app:
 	docker compose -f $(COMPOSE_DEV_FILE) logs -f app
+
 
 # Acceso a servicios
 db:
@@ -70,6 +80,11 @@ db-help:
 
 redis:
 	docker exec -it cisnatura_redis_dev redis-cli
+
+mailhog:
+	@echo "📧 Abriendo MailHog Web UI..."
+	@echo "URL: http://localhost:8025"
+	@open http://localhost:8025 || xdg-open http://localhost:8025 || echo "Abre manualmente: http://localhost:8025"
 
 # Base de datos
 db-init:

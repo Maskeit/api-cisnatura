@@ -6,6 +6,8 @@ from typing import Optional
 from core.database import get_db
 from models.products import Product, Category
 from decimal import Decimal
+from core.dependencies import get_current_admin_user
+from models.user import User
 
 router = APIRouter(
     prefix="/products",
@@ -179,6 +181,99 @@ async def get_product_by_slug(
 # ==================== ADMIN ENDPOINTS ====================
 # Requieren autenticación y rol de administrador
 
+# Endpoint para listar TODOS los productos (admin)
+@router.get("/admin/all")
+async def list_all_products_admin(
+    page: int = Query(1, ge=1, description="Número de página"),
+    limit: int = Query(10, ge=1, le=100, description="Items por página"),
+    category_id: Optional[int] = Query(None, description="Filtrar por categoría"),
+    search: Optional[str] = Query(None, description="Buscar por nombre"),
+    min_price: Optional[float] = Query(None, ge=0, description="Precio mínimo"),
+    max_price: Optional[float] = Query(None, ge=0, description="Precio máximo"),
+    is_active: Optional[bool] = Query(None, description="Filtrar por estado activo/inactivo"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Listar TODOS los productos con paginación y filtros (solo administradores).
+    Muestra productos activos e inactivos.
+    
+    Requiere autenticación y rol de administrador.
+    """
+    # Verificar que el usuario sea administrador
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para acceder a este recurso",
+                "error": "FORBIDDEN"
+            }
+        )
+    
+    # Construir query base (SIN filtrar por is_active)
+    query = db.query(Product)
+    
+    # Aplicar filtros
+    if category_id:
+        query = query.filter(Product.category_id == category_id)
+    
+    if search:
+        query = query.filter(Product.name.ilike(f"%{search}%"))
+    
+    if min_price is not None:
+        query = query.filter(Product.price >= Decimal(str(min_price)))
+    
+    if max_price is not None:
+        query = query.filter(Product.price <= Decimal(str(max_price)))
+    
+    if is_active is not None:
+        query = query.filter(Product.is_active == is_active)
+    
+    # Contar total
+    total = query.count()
+    
+    # Aplicar paginación
+    offset = (page - 1) * limit
+    products = query.offset(offset).limit(limit).all()
+    
+    # Calcular metadata de paginación
+    total_pages = (total + limit - 1) // limit
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Productos obtenidos exitosamente",
+        "data": {
+            "products": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "slug": p.slug,
+                    "description": p.description,
+                    "price": float(p.price),
+                    "stock": p.stock,
+                    "category_id": p.category_id,
+                    "image_url": p.image_url,
+                    "is_active": p.is_active,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
+                    "updated_at": p.updated_at.isoformat() if p.updated_at else None
+                }
+                for p in products
+            ],
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_prev": page > 1
+            }
+        }
+    }
+
+
 @router.post("/", status_code=201)
 async def create_product(
     name: str,
@@ -189,15 +284,24 @@ async def create_product(
     category_id: int,
     image_url: Optional[str] = None,
     db: Session = Depends(get_db),
-    # TODO: Agregar dependencia de autenticación
-    # current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     """
     Crear un nuevo producto (solo administradores).
     
     Requiere autenticación y rol de administrador.
     """
-    # TODO: Verificar que current_user.is_admin == True
+    # Verificar que el usuario sea administrador
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para realizar esta acción",
+                "error": "FORBIDDEN"
+            }
+        )
     
     # Validar que el slug no exista
     existing_product = db.query(Product).filter(Product.slug == slug).first()
@@ -295,8 +399,7 @@ async def update_product(
     image_url: Optional[str] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    # TODO: Agregar dependencia de autenticación
-    # current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     """
     Actualizar un producto existente (solo administradores).
@@ -304,7 +407,17 @@ async def update_product(
     Requiere autenticación y rol de administrador.
     Solo se actualizan los campos enviados.
     """
-    # TODO: Verificar que current_user.is_admin == True
+    # Verificar que el usuario sea administrador
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para realizar esta acción",
+                "error": "FORBIDDEN"
+            }
+        )
     
     # Buscar el producto
     product = db.query(Product).filter(Product.id == product_id).first()
@@ -415,8 +528,7 @@ async def update_product(
 async def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    # TODO: Agregar dependencia de autenticación
-    # current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     """
     Eliminar un producto (soft delete - solo desactiva).
@@ -424,7 +536,17 @@ async def delete_product(
     
     Requiere autenticación y rol de administrador.
     """
-    # TODO: Verificar que current_user.is_admin == True
+    # Verificar que el usuario sea administrador
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para realizar esta acción",
+                "error": "FORBIDDEN"
+            }
+        )
     
     # Buscar el producto
     product = db.query(Product).filter(Product.id == product_id).first()

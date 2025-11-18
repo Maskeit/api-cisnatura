@@ -8,11 +8,14 @@ services:
     container_name: cisnatura_app_dev
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgresql://user:pass@db:5432/cisnatura
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
       - WATCHFILES_FORCE_POLLING=true
+      - UPLOAD_DIR=/app/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -20,6 +23,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app
+      - uploads_data:/app/uploads
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
@@ -59,6 +63,15 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: cisnatura_mailhog_dev
+    ports:
+      - "1025:1025"  # SMTP server
+      - "8025:8025"  # Web UI
+    restart: unless-stopped
+
 volumes:
   postgres_data_dev:
   redis_data_dev:
+  uploads_data:

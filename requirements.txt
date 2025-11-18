@@ -15,10 +15,15 @@ stripe==13.2.0
 # Validación de datos
 pydantic==2.12.4
 pydantic-settings==2.12.0
+email-validator==2.1.0
 
 # Herramientas adicionales
 python-dotenv==1.0.0
 python-multipart==0.0.6
+aiosmtplib==3.0.1
+
+# Procesamiento de imágenes
+Pillow==11.0.0
 
 # Seguridad
 python-jose[cryptography]==3.5.0

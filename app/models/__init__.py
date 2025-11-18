@@ -3,6 +3,7 @@ from .addresses import Address
 from .products import Product, Category
 from .carts import Cart
 from .order import Order, OrderItem, CartItem
+from .email_verification import EmailVerificationToken
 
 __all__ = [
     "User",
@@ -13,4 +14,5 @@ __all__ = [
     "Order",
     "OrderItem",
     "CartItem",
+    "EmailVerificationToken",
 ]

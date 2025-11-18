@@ -113,3 +113,25 @@ class CacheService:
         keys = redis_client.keys(pattern)
         if keys:
             redis_client.delete(*keys)
+
+
+class TokenBlacklistService:
+    """Servicio para gestionar tokens revocados (logout)"""
+    
+    @staticmethod
+    def _get_blacklist_key(token_jti: str) -> str:
+        """Generar clave de Redis para token revocado"""
+        return f"blacklist:token:{token_jti}"
+    
+    @staticmethod
+    def revoke_token(token_jti: str, expires_in_seconds: int) -> None:
+        """Agregar token a la lista negra hasta que expire"""
+        key = TokenBlacklistService._get_blacklist_key(token_jti)
+        # El token se mantiene en la blacklist hasta su expiración natural
+        redis_client.setex(key, expires_in_seconds, "revoked")
+    
+    @staticmethod
+    def is_token_revoked(token_jti: str) -> bool:
+        """Verificar si un token está revocado"""
+        key = TokenBlacklistService._get_blacklist_key(token_jti)
+        return redis_client.exists(key) > 0
