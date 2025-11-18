@@ -1,180 +1,253 @@
 """
-Endpoints para manejo de uploads de imágenes.
+Endpoints para subir archivos (imágenes).
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
-from sqlalchemy.orm import Session
-from core.storage import storage_service
-from core.database import get_db
-from models.products import Product, Category
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
+from pathlib import Path
+import uuid
+import os
+from typing import List
+from PIL import Image
+import io
+from core.config import settings
+from core.dependencies import get_current_admin_user
+from models.user import User
 
 router = APIRouter(
     prefix="/uploads",
     tags=["uploads"]
 )
 
+# Configuración de uploads
+UPLOAD_DIR = Path(settings.UPLOAD_DIR)  # /app/uploads
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+IMAGE_QUALITY = 85  # Calidad de compresión
 
-@router.post("/products/{product_id}/image")
+
+def validate_image(file: UploadFile) -> None:
+    """
+    Validar que el archivo sea una imagen válida.
+    """
+    # Validar extensión
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": f"Tipo de archivo no permitido. Solo se permiten: {', '.join(ALLOWED_EXTENSIONS)}",
+                "error": "INVALID_FILE_TYPE"
+            }
+        )
+    
+    # Validar tipo MIME
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": "El archivo debe ser una imagen",
+                "error": "INVALID_CONTENT_TYPE"
+            }
+        )
+
+
+async def save_image(file: UploadFile, subfolder: str = "products") -> str:
+    """
+    Guardar imagen en el servidor.
+    
+    Args:
+        file: Archivo subido
+        subfolder: Subcarpeta donde guardar (products, categories, etc.)
+    
+    Returns:
+        Ruta relativa de la imagen guardada
+    """
+    # Crear directorio si no existe
+    upload_path = UPLOAD_DIR / subfolder
+    upload_path.mkdir(parents=True, exist_ok=True)
+    
+    # Leer contenido del archivo
+    contents = await file.read()
+    
+    # Validar tamaño
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": f"El archivo es demasiado grande. Máximo: {MAX_FILE_SIZE // (1024*1024)}MB",
+                "error": "FILE_TOO_LARGE"
+            }
+        )
+    
+    # Generar nombre único
+    file_ext = Path(file.filename).suffix.lower()
+    unique_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = upload_path / unique_filename
+    
+    try:
+        # Abrir y procesar imagen con Pillow
+        image = Image.open(io.BytesIO(contents))
+        
+        # Convertir RGBA a RGB si es necesario
+        if image.mode in ("RGBA", "LA", "P"):
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            if image.mode == "P":
+                image = image.convert("RGBA")
+            background.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
+            image = background
+        
+        # Redimensionar si es muy grande (mantener aspecto)
+        max_dimension = 1920
+        if max(image.size) > max_dimension:
+            image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+        
+        # Guardar con compresión
+        image.save(
+            file_path,
+            format="JPEG" if file_ext in [".jpg", ".jpeg"] else image.format,
+            quality=IMAGE_QUALITY,
+            optimize=True
+        )
+        
+        # Retornar ruta relativa
+        return f"/static/{subfolder}/{unique_filename}"
+    
+    except Exception as e:
+        # Eliminar archivo si hubo error
+        if file_path.exists():
+            file_path.unlink()
+        
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": f"Error al procesar la imagen: {str(e)}",
+                "error": "IMAGE_PROCESSING_ERROR"
+            }
+        )
+
+
+@router.post("/products", status_code=201)
 async def upload_product_image(
-    product_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    # TODO: Agregar autenticación
-    # current_user: User = Depends(get_current_admin_user)
+    file: UploadFile = File(..., description="Archivo de imagen"),
+    current_user: User = Depends(get_current_admin_user)
 ):
     """
-    Subir imagen para un producto (solo administradores).
+    Subir imagen de producto (solo administradores).
     
-    - Convierte automáticamente a WebP
-    - Optimiza el tamaño y calidad
-    - Elimina la imagen anterior si existe
+    - Formatos permitidos: JPG, JPEG, PNG, WEBP, GIF
+    - Tamaño máximo: 5MB
+    - La imagen se redimensiona automáticamente si es muy grande
+    - Se comprime para optimizar el almacenamiento
     
-    Requiere autenticación y rol de administrador.
+    Retorna la URL relativa de la imagen guardada.
     """
-    # TODO: Verificar que current_user.is_admin == True
+    # Validar imagen
+    validate_image(file)
     
-    # Verificar que el producto existe
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "success": False,
-                "status_code": 404,
-                "message": "Producto no encontrado",
-                "error": "PRODUCT_NOT_FOUND"
-            }
-        )
-    
-    # Eliminar imagen anterior si existe
-    if product.image_url:
-        storage_service.delete_file(product.image_url)
-    
-    # Guardar nueva imagen optimizada (solo retorna el nombre del archivo)
-    filename = await storage_service.save_product_image(file)
-    
-    # Actualizar producto con solo el nombre del archivo
-    product.image_url = filename
-    db.commit()
-    db.refresh(product)
+    # Guardar imagen
+    file_url = await save_image(file, subfolder="products")
     
     return {
         "success": True,
-        "status_code": 200,
+        "status_code": 201,
         "message": "Imagen subida exitosamente",
         "data": {
-            "product_id": product.id,
-            "image_url": filename,  # Solo el nombre del archivo
-            "full_url": f"/static/products/{filename}"  # URL completa para referencia
+            "file_url": file_url,
+            "filename": file.filename,
+            "content_type": file.content_type
         }
     }
 
 
-@router.post("/categories/{category_id}/image")
+@router.post("/categories", status_code=201)
 async def upload_category_image(
-    category_id: int,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    # TODO: Agregar autenticación
-    # current_user: User = Depends(get_current_admin_user)
+    file: UploadFile = File(..., description="Archivo de imagen"),
+    current_user: User = Depends(get_current_admin_user)
 ):
     """
-    Subir imagen para una categoría (solo administradores).
+    Subir imagen de categoría (solo administradores).
     
-    - Convierte automáticamente a WebP
-    - Optimiza el tamaño y calidad
-    - Elimina la imagen anterior si existe
-    
-    Requiere autenticación y rol de administrador.
+    - Formatos permitidos: JPG, JPEG, PNG, WEBP, GIF
+    - Tamaño máximo: 5MB
     """
-    # TODO: Verificar que current_user.is_admin == True
-    
-    # Verificar que la categoría existe
-    category = db.query(Category).filter(Category.id == category_id).first()
-    if not category:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "success": False,
-                "status_code": 404,
-                "message": "Categoría no encontrada",
-                "error": "CATEGORY_NOT_FOUND"
-            }
-        )
-    
-    # Eliminar imagen anterior si existe
-    if category.image_url:
-        storage_service.delete_file(category.image_url)
-    
-    # Guardar nueva imagen optimizada (solo retorna el nombre del archivo)
-    filename = await storage_service.save_category_image(file)
-    
-    # Actualizar categoría con solo el nombre del archivo
-    category.image_url = filename
-    db.commit()
-    db.refresh(category)
+    validate_image(file)
+    file_url = await save_image(file, subfolder="categories")
     
     return {
         "success": True,
-        "status_code": 200,
+        "status_code": 201,
         "message": "Imagen subida exitosamente",
         "data": {
-            "category_id": category.id,
-            "image_url": filename,  # Solo el nombre del archivo
-            "full_url": f"/static/categories/{filename}"  # URL completa para referencia
+            "file_url": file_url,
+            "filename": file.filename,
+            "content_type": file.content_type
         }
     }
 
 
-@router.delete("/products/{product_id}/image")
-async def delete_product_image(
-    product_id: int,
-    db: Session = Depends(get_db),
-    # TODO: Agregar autenticación
-    # current_user: User = Depends(get_current_admin_user)
+@router.delete("/")
+async def delete_file(
+    file_path: str,
+    current_user: User = Depends(get_current_admin_user)
 ):
     """
-    Eliminar imagen de un producto (solo administradores).
+    Eliminar un archivo del servidor (solo administradores).
     
-    Requiere autenticación y rol de administrador.
+    - file_path: Ruta relativa del archivo (ej: /static/products/abc123.jpg)
     """
-    # TODO: Verificar que current_user.is_admin == True
+    # Validar que la ruta empiece con /static/
+    if not file_path.startswith("/static/"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": "Ruta de archivo inválida",
+                "error": "INVALID_FILE_PATH"
+            }
+        )
     
-    # Verificar que el producto existe
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
+    # Convertir ruta relativa a absoluta
+    relative_path = file_path.replace("/static/", "")
+    full_path = UPLOAD_DIR / relative_path
+    
+    # Verificar que el archivo existe
+    if not full_path.exists():
         raise HTTPException(
             status_code=404,
             detail={
                 "success": False,
                 "status_code": 404,
-                "message": "Producto no encontrado",
-                "error": "PRODUCT_NOT_FOUND"
+                "message": "Archivo no encontrado",
+                "error": "FILE_NOT_FOUND"
             }
         )
     
-    if not product.image_url:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "success": False,
-                "status_code": 404,
-                "message": "El producto no tiene imagen",
-                "error": "NO_IMAGE_FOUND"
+    # Eliminar archivo
+    try:
+        full_path.unlink()
+        return {
+            "success": True,
+            "status_code": 200,
+            "message": "Archivo eliminado exitosamente",
+            "data": {
+                "file_path": file_path
             }
-        )
-    
-    # Eliminar archivo físico
-    storage_service.delete_file(product.image_url)
-    
-    # Actualizar producto
-    product.image_url = None
-    db.commit()
-    
-    return {
-        "success": True,
-        "status_code": 200,
-        "message": "Imagen eliminada exitosamente",
-        "data": {
-            "product_id": product.id
         }
-    }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "status_code": 500,
+                "message": f"Error al eliminar archivo: {str(e)}",
+                "error": "DELETE_ERROR"
+            }
+        )

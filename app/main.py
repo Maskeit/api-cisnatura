@@ -11,6 +11,7 @@ from core.config import settings
 from routes.auth import router as auth_router
 from routes.products import router as products_router
 from routes.uploads import router as uploads_router
+from routes.carts import router as carts_router
 
 app = FastAPI(
     title=settings.API_TITLE,
@@ -100,6 +101,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 app.include_router(auth_router)
 app.include_router(products_router)
 app.include_router(uploads_router)
+app.include_router(carts_router)
 
 # Configurar directorio de uploads para servir archivos estáticos
 # IMPORTANTE: Debe ir después de los routers para no capturar las rutas de API
