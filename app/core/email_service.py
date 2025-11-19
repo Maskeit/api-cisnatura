@@ -59,15 +59,27 @@ class EmailService:
             # Configurar conexión según si hay credenciales o no
             # MailHog no requiere autenticación
             if self.smtp_user and self.smtp_password:
-                # Modo autenticado (Gmail, SendGrid, etc.)
-                await aiosmtplib.send(
-                    message,
-                    hostname=self.smtp_host,
-                    port=self.smtp_port,
-                    username=self.smtp_user,
-                    password=self.smtp_password,
-                    start_tls=True
-                )
+                # Determinar si usar SSL o STARTTLS según el puerto
+                if self.smtp_port == 465:
+                    # Puerto 465: SSL directo (Hostinger, Gmail SSL)
+                    await aiosmtplib.send(
+                        message,
+                        hostname=self.smtp_host,
+                        port=self.smtp_port,
+                        username=self.smtp_user,
+                        password=self.smtp_password,
+                        use_tls=True
+                    )
+                else:
+                    # Puerto 587: STARTTLS (Gmail, SendGrid, etc.)
+                    await aiosmtplib.send(
+                        message,
+                        hostname=self.smtp_host,
+                        port=self.smtp_port,
+                        username=self.smtp_user,
+                        password=self.smtp_password,
+                        start_tls=True
+                    )
             else:
                 # Modo sin autenticación (MailHog, desarrollo)
                 await aiosmtplib.send(
