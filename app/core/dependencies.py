@@ -1,7 +1,7 @@
 """
 Dependencias de autenticación para FastAPI.
 """
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -11,8 +11,27 @@ from core.redis_service import TokenBlacklistService
 from models.user import User
 import uuid
 
-# Security scheme para JWT
-security = HTTPBearer()
+
+# Security scheme personalizado para JWT con mensajes de error consistentes
+class CustomHTTPBearer(HTTPBearer):
+    async def __call__(self, request: Request) -> HTTPAuthorizationCredentials:
+        try:
+            return await super().__call__(request)
+        except HTTPException:
+            # Capturar el error de FastAPI y lanzar uno con nuestro formato
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "success": False,
+                    "status_code": 401,
+                    "message": "Token de autenticación requerido",
+                    "error": "AUTHENTICATION_REQUIRED"
+                },
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
+
+security = CustomHTTPBearer()
 
 
 async def get_current_user(

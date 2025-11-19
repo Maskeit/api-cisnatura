@@ -1,20 +1,17 @@
 """
-Endpoints para gestión de carritos de compra.
+Endpoints para gestión de carritos de compra usando Redis.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
-from decimal import Decimal
+from typing import List, Dict
 from core.database import get_db
 from core.dependencies import get_current_user
+from core.redis_service import CartService
 from models.user import User
-from models.carts import Cart, CartItem
 from models.products import Product
 from schemas.carts import (
     CartItemCreate,
     CartItemUpdate,
-    CartItemResponse,
-    CartResponse,
     CartSummary
 )
 
@@ -24,80 +21,80 @@ router = APIRouter(
 )
 
 
-def get_or_create_cart(user_id: str, db: Session) -> Cart:
+def get_products_data(product_ids: List[int], db: Session) -> Dict[int, Product]:
     """
-    Obtener carrito activo del usuario o crear uno nuevo.
+    Obtener información de productos desde PostgreSQL.
     """
-    cart = db.query(Cart).filter(
-        Cart.user_id == user_id,
-        Cart.is_active == True
-    ).first()
+    if not product_ids:
+        return {}
     
-    if not cart:
-        cart = Cart(user_id=user_id, is_active=True)
-        db.add(cart)
-        db.commit()
-        db.refresh(cart)
+    products = db.query(Product).filter(
+        Product.id.in_(product_ids),
+        Product.is_active == True
+    ).all()
     
-    return cart
+    return {product.id: product for product in products}
 
 
-def calculate_cart_totals(cart: Cart) -> dict:
+def format_cart_response(user_id: str, db: Session) -> dict:
     """
-    Calcular totales del carrito.
+    Formatear respuesta del carrito desde Redis.
     """
-    total_items = sum(item.quantity for item in cart.cart_items)
-    total_amount = sum(
-        float(item.product.price) * item.quantity 
-        for item in cart.cart_items
-        if item.product.is_active
-    )
+    # Obtener carrito desde Redis
+    cart_data = CartService.get_cart(user_id)
+    
+    if not cart_data:
+        return {
+            "user_id": user_id,
+            "items": [],
+            "total_items": 0,
+            "total_amount": 0.0
+        }
+    
+    # Obtener IDs de productos
+    product_ids = [int(pid) for pid in cart_data.keys()]
+    products = get_products_data(product_ids, db)
+    
+    # Construir items con información completa
+    items = []
+    total_items = 0
+    total_amount = 0.0
+    
+    for product_id_str, cart_item in cart_data.items():
+        product_id = int(product_id_str)
+        product = products.get(product_id)
+        
+        # Solo incluir productos activos
+        if not product:
+            continue
+        
+        quantity = cart_item["quantity"]
+        price = float(product.price)
+        subtotal = round(price * quantity, 2)
+        
+        items.append({
+            "product_id": product_id,
+            "quantity": quantity,
+            "product": {
+                "id": product.id,
+                "name": product.name,
+                "slug": product.slug,
+                "price": price,
+                "stock": product.stock,
+                "image_url": product.image_url,
+                "is_active": product.is_active
+            },
+            "subtotal": subtotal
+        })
+        
+        total_items += quantity
+        total_amount += subtotal
     
     return {
+        "user_id": user_id,
+        "items": items,
         "total_items": total_items,
         "total_amount": round(total_amount, 2)
-    }
-
-
-def format_cart_response(cart: Cart) -> dict:
-    """
-    Formatear respuesta del carrito con todos los datos.
-    """
-    totals = calculate_cart_totals(cart)
-    
-    items = []
-    for item in cart.cart_items:
-        # Solo mostrar productos activos
-        if not item.product.is_active:
-            continue
-            
-        items.append({
-            "id": item.id,
-            "cart_id": item.cart_id,
-            "product_id": item.product_id,
-            "quantity": item.quantity,
-            "product": {
-                "id": item.product.id,
-                "name": item.product.name,
-                "slug": item.product.slug,
-                "price": float(item.product.price),
-                "stock": item.product.stock,
-                "image_url": item.product.image_url,
-                "is_active": item.product.is_active
-            },
-            "subtotal": round(float(item.product.price) * item.quantity, 2),
-            "created_at": item.created_at.isoformat() if item.created_at else None,
-            "updated_at": item.updated_at.isoformat() if item.updated_at else None
-        })
-    
-    return {
-        "id": cart.id,
-        "user_id": str(cart.user_id),
-        "is_active": cart.is_active,
-        "items": items,
-        "total_items": totals["total_items"],
-        "total_amount": totals["total_amount"],
-        "created_at": cart.created_at.isoformat() if cart.created_at else None
     }
 
 
@@ -109,14 +106,14 @@ async def get_cart(
     db: Session = Depends(get_db)
 ):
     """
-    Obtener el carrito del usuario autenticado.
+    Obtener el carrito del usuario desde Redis.
     
     - Retorna el carrito con todos sus items
-    - Incluye información completa de cada producto
+    - Incluye información completa de cada producto desde PostgreSQL
     - Calcula totales automáticamente
     """
-    cart = get_or_create_cart(str(current_user.id), db)
-    cart_data = format_cart_response(cart)
+    user_id = str(current_user.id)
+    cart_data = format_cart_response(user_id, db)
     
     return {
         "success": True,
@@ -136,14 +133,17 @@ async def get_cart_summary(
     
     Útil para mostrar el badge del carrito sin cargar todos los items.
     """
-    cart = get_or_create_cart(str(current_user.id), db)
-    totals = calculate_cart_totals(cart)
+    user_id = str(current_user.id)
+    cart_data = format_cart_response(user_id, db)
     
     return {
         "success": True,
         "status_code": 200,
         "message": "Resumen del carrito",
-        "data": totals
+        "data": {
+            "total_items": cart_data["total_items"],
+            "total_amount": cart_data["total_amount"]
+        }
     }
 
 
@@ -154,14 +154,13 @@ async def add_item_to_cart(
     db: Session = Depends(get_db)
 ):
     """
-    Agregar producto al carrito.
+    Agregar producto al carrito en Redis.
     
     - Si el producto ya existe, incrementa la cantidad
     - Valida que el producto exista y esté activo
     - Valida que haya stock suficiente
     """
-    # Obtener o crear carrito
-    cart = get_or_create_cart(str(current_user.id), db)
+    user_id = str(current_user.id)
     
     # Validar que el producto exista y esté activo
     product = db.query(Product).filter(
@@ -180,106 +179,90 @@ async def add_item_to_cart(
             }
         )
     
-    # Verificar si el producto ya está en el carrito
-    existing_item = db.query(CartItem).filter(
-        CartItem.cart_id == cart.id,
-        CartItem.product_id == item_data.product_id
-    ).first()
+    # Obtener carrito actual desde Redis
+    cart_data = CartService.get_cart(user_id)
+    product_id_str = str(item_data.product_id)
     
-    if existing_item:
-        # Incrementar cantidad
-        new_quantity = existing_item.quantity + item_data.quantity
-        
-        # Validar stock
-        if new_quantity > product.stock:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "success": False,
-                    "status_code": 400,
-                    "message": f"Stock insuficiente. Disponible: {product.stock}",
-                    "error": "INSUFFICIENT_STOCK"
-                }
-            )
-        
-        existing_item.quantity = new_quantity
-        db.commit()
-        db.refresh(existing_item)
-        
-        message = "Cantidad actualizada en el carrito"
-    else:
-        # Validar stock
-        if item_data.quantity > product.stock:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "success": False,
-                    "status_code": 400,
-                    "message": f"Stock insuficiente. Disponible: {product.stock}",
-                    "error": "INSUFFICIENT_STOCK"
-                }
-            )
-        
-        # Crear nuevo item
-        new_item = CartItem(
-            cart_id=cart.id,
-            product_id=item_data.product_id,
-            quantity=item_data.quantity
+    # Calcular nueva cantidad
+    current_quantity = cart_data.get(product_id_str, {}).get("quantity", 0)
+    new_quantity = current_quantity + item_data.quantity
+    
+    # Validar stock
+    if new_quantity > product.stock:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": f"Stock insuficiente. Disponible: {product.stock}",
+                "error": "INSUFFICIENT_STOCK"
+            }
         )
-        db.add(new_item)
-        db.commit()
-        db.refresh(new_item)
-        
-        message = "Producto agregado al carrito"
+    
+    # Agregar al carrito en Redis
+    CartService.add_item(user_id, item_data.product_id, item_data.quantity)
     
     # Retornar carrito actualizado
-    cart = db.query(Cart).filter(Cart.id == cart.id).first()
-    cart_data = format_cart_response(cart)
+    cart_response = format_cart_response(user_id, db)
+    message = "Cantidad actualizada en el carrito" if current_quantity > 0 else "Producto agregado al carrito"
     
     return {
         "success": True,
         "status_code": 201,
         "message": message,
-        "data": cart_data
+        "data": cart_response
     }
 
 
-@router.put("/items/{item_id}")
+@router.put("/items/{product_id}")
 async def update_cart_item(
-    item_id: int,
+    product_id: int,
     item_data: CartItemUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Actualizar cantidad de un item del carrito.
+    Actualizar cantidad de un item del carrito en Redis.
     
     - Permite aumentar o disminuir la cantidad
-    - Valida que el item pertenezca al usuario
+    - Valida que el producto exista en el carrito
     - Valida stock disponible
     """
-    # Obtener carrito del usuario
-    cart = get_or_create_cart(str(current_user.id), db)
+    user_id = str(current_user.id)
     
-    # Buscar el item
-    cart_item = db.query(CartItem).filter(
-        CartItem.id == item_id,
-        CartItem.cart_id == cart.id
-    ).first()
+    # Verificar que el producto esté en el carrito
+    cart_data = CartService.get_cart(user_id)
+    product_id_str = str(product_id)
     
-    if not cart_item:
+    if product_id_str not in cart_data:
         raise HTTPException(
             status_code=404,
             detail={
                 "success": False,
                 "status_code": 404,
-                "message": "Item no encontrado en el carrito",
+                "message": "Producto no encontrado en el carrito",
                 "error": "ITEM_NOT_FOUND"
             }
         )
     
+    # Validar que el producto exista y esté activo
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.is_active == True
+    ).first()
+    
+    if not product:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "status_code": 404,
+                "message": "Producto no encontrado o no disponible",
+                "error": "PRODUCT_NOT_FOUND"
+            }
+        )
+    
     # Validar stock
-    product = cart_item.product
     if item_data.quantity > product.stock:
         raise HTTPException(
             status_code=400,
@@ -291,65 +274,57 @@ async def update_cart_item(
             }
         )
     
-    # Actualizar cantidad
-    cart_item.quantity = item_data.quantity
-    db.commit()
-    db.refresh(cart_item)
+    # Actualizar cantidad en Redis
+    CartService.update_item_quantity(user_id, product_id, item_data.quantity)
     
     # Retornar carrito actualizado
-    cart = db.query(Cart).filter(Cart.id == cart.id).first()
-    cart_data = format_cart_response(cart)
+    cart_response = format_cart_response(user_id, db)
     
     return {
         "success": True,
         "status_code": 200,
         "message": "Cantidad actualizada",
-        "data": cart_data
+        "data": cart_response
     }
 
 
-@router.delete("/items/{item_id}")
+@router.delete("/items/{product_id}")
 async def remove_cart_item(
-    item_id: int,
+    product_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Eliminar un item del carrito.
+    Eliminar un item del carrito en Redis.
     """
-    # Obtener carrito del usuario
-    cart = get_or_create_cart(str(current_user.id), db)
+    user_id = str(current_user.id)
     
-    # Buscar el item
-    cart_item = db.query(CartItem).filter(
-        CartItem.id == item_id,
-        CartItem.cart_id == cart.id
-    ).first()
+    # Verificar que el producto esté en el carrito
+    cart_data = CartService.get_cart(user_id)
+    product_id_str = str(product_id)
     
-    if not cart_item:
+    if product_id_str not in cart_data:
         raise HTTPException(
             status_code=404,
             detail={
                 "success": False,
                 "status_code": 404,
-                "message": "Item no encontrado en el carrito",
+                "message": "Producto no encontrado en el carrito",
                 "error": "ITEM_NOT_FOUND"
             }
         )
     
-    # Eliminar item
-    db.delete(cart_item)
-    db.commit()
+    # Eliminar item de Redis
+    CartService.remove_item(user_id, product_id)
     
     # Retornar carrito actualizado
-    cart = db.query(Cart).filter(Cart.id == cart.id).first()
-    cart_data = format_cart_response(cart)
+    cart_response = format_cart_response(user_id, db)
     
     return {
         "success": True,
         "status_code": 200,
         "message": "Producto eliminado del carrito",
-        "data": cart_data
+        "data": cart_response
     }
 
 
@@ -359,22 +334,19 @@ async def clear_cart(
     db: Session = Depends(get_db)
 ):
     """
-    Vaciar el carrito completamente.
+    Vaciar el carrito completamente en Redis.
     """
-    # Obtener carrito del usuario
-    cart = get_or_create_cart(str(current_user.id), db)
+    user_id = str(current_user.id)
     
-    # Eliminar todos los items
-    db.query(CartItem).filter(CartItem.cart_id == cart.id).delete()
-    db.commit()
+    # Limpiar carrito en Redis
+    CartService.clear_cart(user_id)
     
     # Retornar carrito vacío
-    cart = db.query(Cart).filter(Cart.id == cart.id).first()
-    cart_data = format_cart_response(cart)
+    cart_response = format_cart_response(user_id, db)
     
     return {
         "success": True,
         "status_code": 200,
         "message": "Carrito vaciado exitosamente",
-        "data": cart_data
+        "data": cart_response
     }

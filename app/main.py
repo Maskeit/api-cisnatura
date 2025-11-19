@@ -12,6 +12,9 @@ from routes.auth import router as auth_router
 from routes.products import router as products_router
 from routes.uploads import router as uploads_router
 from routes.carts import router as carts_router
+from routes.addresses import router as addresses_router
+from routes.orders import router as orders_router
+from routes.admin_orders import router as admin_orders_router
 
 app = FastAPI(
     title=settings.API_TITLE,
@@ -102,6 +105,9 @@ app.include_router(auth_router)
 app.include_router(products_router)
 app.include_router(uploads_router)
 app.include_router(carts_router)
+app.include_router(addresses_router)
+app.include_router(orders_router)
+app.include_router(admin_orders_router)
 
 # Configurar directorio de uploads para servir archivos estáticos
 # IMPORTANTE: Debe ir después de los routers para no capturar las rutas de API

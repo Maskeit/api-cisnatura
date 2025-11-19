@@ -9,6 +9,9 @@ class Address(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    full_name = Column(String(255), nullable=False)
+    phone = Column(String(20), nullable=False)
+    rfc = Column(String(13), nullable=True)
     label = Column(String(80), nullable=True)
     street = Column(String(255), nullable=False)
     city = Column(String(120), nullable=False)
