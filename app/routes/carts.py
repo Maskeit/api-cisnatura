@@ -100,7 +100,7 @@ def format_cart_response(user_id: str, db: Session) -> dict:
 
 # ==================== ENDPOINTS ====================
 
-@router.get("/")
+@router.get("", include_in_schema=True)
 async def get_cart(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
