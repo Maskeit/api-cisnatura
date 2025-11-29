@@ -17,11 +17,16 @@ from routes.orders import router as orders_router
 from routes.admin_orders import router as admin_orders_router
 from routes.user import router as user_router
 
+# Inicializar Firebase Admin SDK
+from core.firebase_service import firebase_service
+firebase_service.initialize()
+
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description=settings.API_DESCRIPTION,
-    docs_url="/docs"
+    docs_url="/docs",
+    redirect_slashes=False  # Evita redirects 307
 )
 
 # CORS config
