@@ -17,12 +17,13 @@ COPY requirements.txt .
 # Instalar las dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código de la aplicación
-COPY app ./app
-
-# alembic
-COPY alembic.ini /app/
+# Copiar configuración de Alembic (ANTES de la app)
+COPY alembic.ini /app/alembic.ini
 COPY alembic /app/alembic
+
+# Copiar la aplicación principal
+COPY ./app /app
+
 # Exponer el puerto 8000
 EXPOSE 8000
 
