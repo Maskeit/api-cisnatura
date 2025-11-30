@@ -121,3 +121,20 @@ class ChangePasswordRequest(BaseModel):
         if not any(char.islower() for char in v):
             raise ValueError('La contraseña debe contener al menos una minúscula')
         return v
+
+
+# ==================== GOOGLE AUTH SCHEMAS ====================
+
+class GoogleLoginRequest(BaseModel):
+    """Schema para login con Google"""
+    firebase_token: str = Field(..., description="Token de ID de Firebase")
+
+
+class GoogleAuthResponse(BaseModel):
+    """Schema para respuesta de autenticación con Google"""
+    access_token: str = Field(..., description="Token de acceso JWT")
+    refresh_token: str = Field(..., description="Token de refresh JWT")
+    token_type: str = Field(default="bearer", description="Tipo de token")
+    expires_in: int = Field(..., description="Segundos hasta la expiración")
+    user: dict = Field(..., description="Información del usuario")
+    is_new_user: bool = Field(..., description="Indica si el usuario es nuevo")

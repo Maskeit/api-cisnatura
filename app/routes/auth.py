@@ -18,7 +18,8 @@ from schemas.auth import (
     TokenResponse,
     VerifyEmailRequest,
     ResendVerificationRequest,
-    UserResponse
+    UserResponse,
+    GoogleLoginRequest
 )
 
 # Security scheme para logout
@@ -385,4 +386,139 @@ async def logout(
         "success": True,
         "status_code": 200,
         "message": "Sesión cerrada exitosamente"
+    }
+
+
+# ==================== GOOGLE AUTH ====================
+
+@router.post("/google-login")
+async def google_login(
+    request: GoogleLoginRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Iniciar sesión o registrarse con Google (Firebase).
+    
+    - Verifica el token de Firebase
+    - Si el usuario existe, retorna tokens de acceso
+    - Si el usuario no existe, lo crea automáticamente
+    - No requiere verificación de email (Google ya lo verificó)
+    
+    Returns:
+        - access_token: Token JWT de la aplicación
+        - refresh_token: Token de refresh
+        - user: Información del usuario
+        - is_new_user: True si el usuario fue creado en esta petición
+    """
+    from core.firebase_service import firebase_service
+    
+    # 1. Verificar token de Firebase
+    firebase_user = firebase_service.verify_token(request.firebase_token)
+    
+    if not firebase_user or not firebase_user.get("email"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "No se pudo obtener información del usuario de Google",
+                "error": "GOOGLE_USER_INFO_MISSING"
+            }
+        )
+    
+    email = firebase_user["email"]
+    firebase_uid = firebase_user["uid"]
+    full_name = firebase_user.get("name", email.split("@")[0])
+    profile_image = firebase_user.get("picture")
+    email_verified = firebase_user.get("email_verified", True)
+    
+    # 2. Buscar usuario existente por email o firebase_uid
+    user = db.query(User).filter(
+        (User.email == email) | (User.firebase_uid == firebase_uid)
+    ).first()
+    
+    is_new_user = False
+    
+    # 3. Si el usuario no existe, crearlo
+    if not user:
+        user = User(
+            email=email,
+            full_name=full_name,
+            firebase_uid=firebase_uid,
+            auth_provider="google",
+            profile_image=profile_image,
+            email_verified=email_verified,
+            email_verified_at=datetime.now(timezone.utc) if email_verified else None,
+            is_active=True,
+            is_admin=False,
+            hashed_password=None  # No hay contraseña para usuarios de Google
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        is_new_user = True
+        print(f"✅ Nuevo usuario creado con Google: {email}")
+    
+    # 4. Si el usuario existe pero no tiene firebase_uid, vincularlo
+    elif not user.firebase_uid:
+        user.firebase_uid = firebase_uid
+        user.auth_provider = "google"
+        if not user.email_verified:
+            user.email_verified = email_verified
+            user.email_verified_at = datetime.now(timezone.utc) if email_verified else None
+        if profile_image and not user.profile_image:
+            user.profile_image = profile_image
+        db.commit()
+        db.refresh(user)
+        print(f"✅ Usuario vinculado con Google: {email}")
+    
+    # 5. Verificar que el usuario esté activo
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "Usuario inactivo. Contacta con soporte.",
+                "error": "USER_INACTIVE"
+            }
+        )
+    
+    # 6. Crear tokens JWT propios de la aplicación
+    access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "email": user.email,
+            "is_admin": user.is_admin
+        }
+    )
+    
+    refresh_token = create_refresh_token(
+        data={
+            "sub": str(user.id)
+        }
+    )
+    
+    # 7. Retornar respuesta
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Login con Google exitoso" if not is_new_user else "Cuenta creada con Google exitosamente",
+        "data": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            "user": {
+                "id": str(user.id),
+                "email": user.email,
+                "full_name": user.full_name,
+                "is_active": user.is_active,
+                "is_admin": user.is_admin,
+                "email_verified": user.email_verified,
+                "auth_provider": user.auth_provider,
+                "profile_image": user.profile_image
+            },
+            "is_new_user": is_new_user
+        }
     }
