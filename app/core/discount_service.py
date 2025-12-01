@@ -149,7 +149,9 @@ def calculate_product_discount(
 
 def apply_discounts_to_products(
     products: list,
-    db: Session
+    db: Session,
+    truncate_description: bool = True,
+    max_description_length: int = 150
 ) -> list:
     """
     Aplicar descuentos a una lista de productos.
@@ -157,6 +159,8 @@ def apply_discounts_to_products(
     Args:
         products: Lista de objetos Product
         db: Sesión de base de datos
+        truncate_description: Si True, trunca la descripción (para listados)
+        max_description_length: Longitud máxima de la descripción truncada
     
     Returns:
         Lista de diccionarios con productos y descuentos aplicados
@@ -167,11 +171,16 @@ def apply_discounts_to_products(
     for product in products:
         final_price, discount_info = calculate_product_discount(product, settings)
         
+        # Truncar descripción si está habilitado
+        description = product.description or ""
+        if truncate_description and len(description) > max_description_length:
+            description = description[:max_description_length].rsplit(' ', 1)[0] + "..."
+        
         product_dict = {
             "id": product.id,
             "name": product.name,
             "slug": product.slug,
-            "description": product.description,
+            "description": description,
             "original_price": float(product.price),
             "price": final_price,  # Precio con descuento aplicado
             "stock": product.stock,

@@ -440,9 +440,14 @@ async def list_products(
     # Calcular metadata de paginación
     total_pages = (total + limit - 1) // limit
     
-    # Aplicar descuentos a los productos
+    # Aplicar descuentos a los productos (con descripción truncada)
     from core.discount_service import apply_discounts_to_products
-    products_with_discounts = apply_discounts_to_products(products, db)
+    products_with_discounts = apply_discounts_to_products(
+        products, 
+        db,
+        truncate_description=True,  # Truncar para listados
+        max_description_length=150   # Máximo 150 caracteres
+    )
     
     return {
         "success": True,
@@ -487,9 +492,13 @@ async def get_product(
             }
         )
     
-    # Aplicar descuentos
+    # Aplicar descuentos (descripción completa para detalle)
     from core.discount_service import apply_discounts_to_products
-    product_with_discount = apply_discounts_to_products([product], db)[0]
+    product_with_discount = apply_discounts_to_products(
+        [product], 
+        db,
+        truncate_description=False  # Descripción completa en detalle
+    )[0]
     
     # Agregar campos adicionales
     product_with_discount["updated_at"] = product.updated_at.isoformat() if product.updated_at else None
@@ -527,9 +536,13 @@ async def get_product_by_slug(
             }
         )
     
-    # Aplicar descuentos
+    # Aplicar descuentos (descripción completa para detalle)
     from core.discount_service import apply_discounts_to_products
-    product_with_discount = apply_discounts_to_products([product], db)[0]
+    product_with_discount = apply_discounts_to_products(
+        [product], 
+        db,
+        truncate_description=False  # Descripción completa en detalle
+    )[0]
     
     # Agregar campos adicionales
     product_with_discount["updated_at"] = product.updated_at.isoformat() if product.updated_at else None
