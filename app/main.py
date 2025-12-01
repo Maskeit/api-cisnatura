@@ -19,6 +19,7 @@ from routes.orders import router as orders_router
 from routes.admin_orders import router as admin_orders_router
 from routes.user import router as user_router
 from routes.admin_settings import router as admin_settings_router
+from routes.public_settings import router as public_settings_router
 
 # Inicializar Firebase Admin SDK
 from core.firebase_service import firebase_service
@@ -186,6 +187,7 @@ app.include_router(addresses_router)
 app.include_router(orders_router)
 app.include_router(admin_orders_router)
 app.include_router(admin_settings_router)
+app.include_router(public_settings_router)
 app.include_router(user_router)
 
 # Configurar directorio de uploads para servir archivos estáticos

@@ -39,6 +39,7 @@ def get_products_data(product_ids: List[int], db: Session) -> Dict[int, Product]
 def format_cart_response(user_id: str, db: Session) -> dict:
     """
     Formatear respuesta del carrito desde Redis.
+    Aplica descuentos activos a los productos.
     """
     # Obtener carrito desde Redis
     cart_data = CartService.get_cart(user_id)
@@ -48,17 +49,27 @@ def format_cart_response(user_id: str, db: Session) -> dict:
             "user_id": user_id,
             "items": [],
             "total_items": 0,
-            "total_amount": 0.0
+            "total_amount": 0.0,
+            "total_discount": 0.0,
+            "total_without_discount": 0.0
         }
     
     # Obtener IDs de productos
     product_ids = [int(pid) for pid in cart_data.keys()]
     products = get_products_data(product_ids, db)
     
+    # Aplicar descuentos a los productos
+    from core.discount_service import calculate_product_discount
+    from models.admin_settings import AdminSettings
+    
+    settings = db.query(AdminSettings).first()
+    
     # Construir items con información completa
     items = []
     total_items = 0
     total_amount = 0.0
+    total_discount = 0.0
+    total_without_discount = 0.0
     
     for product_id_str, cart_item in cart_data.items():
         product_id = int(product_id_str)
@@ -69,8 +80,19 @@ def format_cart_response(user_id: str, db: Session) -> dict:
             continue
         
         quantity = cart_item["quantity"]
-        price = float(product.price)
-        subtotal = round(price * quantity, 2)
+        original_price = float(product.price)
+        
+        # Calcular descuento si hay configuración de admin
+        if settings:
+            final_price, discount_info = calculate_product_discount(product, settings)
+        else:
+            final_price = original_price
+            discount_info = None
+        
+        # Calcular subtotales
+        subtotal = round(final_price * quantity, 2)
+        subtotal_without_discount = round(original_price * quantity, 2)
+        item_discount = round(subtotal_without_discount - subtotal, 2)
         
         items.append({
             "product_id": product_id,
@@ -79,22 +101,31 @@ def format_cart_response(user_id: str, db: Session) -> dict:
                 "id": product.id,
                 "name": product.name,
                 "slug": product.slug,
-                "price": price,
+                "price": final_price,  # Precio con descuento aplicado
+                "original_price": original_price,  # Precio original
                 "stock": product.stock,
                 "image_url": product.image_url,
-                "is_active": product.is_active
+                "is_active": product.is_active,
+                "has_discount": discount_info is not None,
+                "discount": discount_info  # Info del descuento aplicado
             },
-            "subtotal": subtotal
+            "subtotal": subtotal,  # Subtotal con descuento
+            "subtotal_without_discount": subtotal_without_discount,  # Subtotal sin descuento
+            "discount_amount": item_discount  # Ahorro por item
         })
         
         total_items += quantity
         total_amount += subtotal
+        total_discount += item_discount
+        total_without_discount += subtotal_without_discount
     
     return {
         "user_id": user_id,
         "items": items,
         "total_items": total_items,
-        "total_amount": round(total_amount, 2)
+        "total_amount": round(total_amount, 2),  # Total con descuentos
+        "total_discount": round(total_discount, 2),  # Total ahorrado
+        "total_without_discount": round(total_without_discount, 2)  # Total original
     }
 
 

@@ -334,6 +334,62 @@ async def delete_category(
     }
 
 
+@router.get("/categories/admin/simple-list")
+async def get_categories_simple_list(
+    is_active: Optional[bool] = Query(True, description="Filtrar por estado"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Obtener lista simple de categorías (solo ID y nombre).
+    Ideal para desplegables/selects en el panel de admin.
+    
+    Requiere autenticación y rol de administrador.
+    
+    - **is_active**: Filtrar por categorías activas (default: True)
+    
+    Retorna: Lista de objetos con {id, name}
+    """
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para acceder a este recurso",
+                "error": "FORBIDDEN"
+            }
+        )
+    
+    # Query base
+    query = db.query(Category.id, Category.name)
+    
+    # Filtrar por estado si se especifica
+    if is_active is not None:
+        query = query.filter(Category.is_active == is_active)
+    
+    # Ordenar alfabéticamente
+    query = query.order_by(Category.name.asc())
+    
+    categories = query.all()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Lista de categorías obtenida exitosamente",
+        "data": {
+            "categories": [
+                {
+                    "id": str(c.id),  # Como string para consistencia con descuentos
+                    "name": c.name
+                }
+                for c in categories
+            ],
+            "total": len(categories)
+        }
+    }
+
+
 # ==================== PRODUCTOS ====================
 
 # listar productos con paginación y filtros primeros 10
@@ -488,6 +544,63 @@ async def get_product_by_slug(
     
 # ==================== ADMIN ENDPOINTS ====================
 # Requieren autenticación y rol de administrador
+
+# Endpoint para obtener solo IDs y nombres (para desplegables)
+@router.get("/admin/simple-list")
+async def get_products_simple_list(
+    is_active: Optional[bool] = Query(True, description="Filtrar por estado"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Obtener lista simple de productos (solo ID y nombre).
+    Ideal para desplegables/selects en el panel de admin.
+    
+    Requiere autenticación y rol de administrador.
+    
+    - **is_active**: Filtrar por productos activos (default: True)
+    
+    Retorna: Lista de objetos con {id, name}
+    """
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para acceder a este recurso",
+                "error": "FORBIDDEN"
+            }
+        )
+    
+    # Query base
+    query = db.query(Product.id, Product.name)
+    
+    # Filtrar por estado si se especifica
+    if is_active is not None:
+        query = query.filter(Product.is_active == is_active)
+    
+    # Ordenar alfabéticamente
+    query = query.order_by(Product.name.asc())
+    
+    products = query.all()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Lista de productos obtenida exitosamente",
+        "data": {
+            "products": [
+                {
+                    "id": str(p.id),  # Como string para consistencia con descuentos
+                    "name": p.name
+                }
+                for p in products
+            ],
+            "total": len(products)
+        }
+    }
+
 
 # Endpoint para listar TODOS los productos (admin)
 @router.get("/admin/all")

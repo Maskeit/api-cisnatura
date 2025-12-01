@@ -146,3 +146,52 @@ class DiscountInfo(BaseModel):
     discount_percentage: float
     discount_name: str
     is_active: bool
+
+
+# Respuestas específicas para cada endpoint
+class MaintenanceResponse(BaseModel):
+    """Respuesta al actualizar modo mantenimiento"""
+    success: bool = True
+    status_code: int = 200
+    message: str
+    data: Dict = Field(..., description="maintenance_mode y maintenance_message")
+
+
+class ShippingResponse(BaseModel):
+    """Respuesta al actualizar precio de envío"""
+    success: bool = True
+    status_code: int = 200
+    message: str
+    data: Dict = Field(..., description="shipping_price y free_shipping_threshold")
+
+
+class GlobalDiscountResponse(BaseModel):
+    """Respuesta al actualizar descuento global"""
+    success: bool = True
+    status_code: int = 200
+    message: str
+    data: Dict = Field(..., description="enabled, percentage, name")
+
+
+class CategoryDiscountResponse(BaseModel):
+    """Respuesta al agregar/eliminar descuento de categoría"""
+    success: bool = True
+    status_code: int = 200
+    message: str
+    data: Dict = Field(..., description="category_discounts")
+
+
+class ProductDiscountResponse(BaseModel):
+    """Respuesta al agregar/eliminar descuento de producto"""
+    success: bool = True
+    status_code: int = 200
+    message: str
+    data: Dict = Field(..., description="product_discounts")
+
+
+class SeasonalOfferResponse(BaseModel):
+    """Respuesta al agregar/eliminar oferta temporal"""
+    success: bool = True
+    status_code: int = 200
+    message: str
+    data: List = Field(..., description="seasonal_offers")
