@@ -334,6 +334,62 @@ async def delete_category(
     }
 
 
+@router.get("/categories/admin/simple-list")
+async def get_categories_simple_list(
+    is_active: Optional[bool] = Query(True, description="Filtrar por estado"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Obtener lista simple de categorías (solo ID y nombre).
+    Ideal para desplegables/selects en el panel de admin.
+    
+    Requiere autenticación y rol de administrador.
+    
+    - **is_active**: Filtrar por categorías activas (default: True)
+    
+    Retorna: Lista de objetos con {id, name}
+    """
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para acceder a este recurso",
+                "error": "FORBIDDEN"
+            }
+        )
+    
+    # Query base
+    query = db.query(Category.id, Category.name)
+    
+    # Filtrar por estado si se especifica
+    if is_active is not None:
+        query = query.filter(Category.is_active == is_active)
+    
+    # Ordenar alfabéticamente
+    query = query.order_by(Category.name.asc())
+    
+    categories = query.all()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Lista de categorías obtenida exitosamente",
+        "data": {
+            "categories": [
+                {
+                    "id": str(c.id),  # Como string para consistencia con descuentos
+                    "name": c.name
+                }
+                for c in categories
+            ],
+            "total": len(categories)
+        }
+    }
+
+
 # ==================== PRODUCTOS ====================
 
 # listar productos con paginación y filtros primeros 10
@@ -349,6 +405,7 @@ async def list_products(
 ):
     """
     Listar productos con paginación y filtros.
+    Los descuentos activos se aplican automáticamente.
     
     - **page**: Número de página (default: 1)
     - **limit**: Productos por página (default: 10, max: 100)
@@ -383,25 +440,16 @@ async def list_products(
     # Calcular metadata de paginación
     total_pages = (total + limit - 1) // limit
     
+    # Aplicar descuentos a los productos
+    from core.discount_service import apply_discounts_to_products
+    products_with_discounts = apply_discounts_to_products(products, db)
+    
     return {
         "success": True,
         "status_code": 200,
         "message": "Productos obtenidos exitosamente",
         "data": {
-            "products": [
-                {
-                    "id": p.id,
-                    "name": p.name,
-                    "slug": p.slug,
-                    "description": p.description,
-                    "price": float(p.price),
-                    "stock": p.stock,
-                    "category_id": p.category_id,
-                    "image_url": p.image_url,
-                    "created_at": p.created_at.isoformat() if p.created_at else None
-                }
-                for p in products
-            ],
+            "products": products_with_discounts,
             "pagination": {
                 "page": page,
                 "limit": limit,
@@ -421,6 +469,7 @@ async def get_product(
 ):
     """
     Obtener un producto por su ID.
+    Aplica descuentos activos automáticamente.
     """
     product = db.query(Product).filter(
         Product.id == product_id,
@@ -438,22 +487,18 @@ async def get_product(
             }
         )
     
+    # Aplicar descuentos
+    from core.discount_service import apply_discounts_to_products
+    product_with_discount = apply_discounts_to_products([product], db)[0]
+    
+    # Agregar campos adicionales
+    product_with_discount["updated_at"] = product.updated_at.isoformat() if product.updated_at else None
+    
     return {
         "success": True,
         "status_code": 200,
         "message": "Producto obtenido exitosamente",
-        "data": {
-            "id": product.id,
-            "name": product.name,
-            "slug": product.slug,
-            "description": product.description,
-            "price": float(product.price),
-            "stock": product.stock,
-            "category_id": product.category_id,
-            "image_url": product.image_url,
-            "created_at": product.created_at.isoformat() if product.created_at else None,
-            "updated_at": product.updated_at.isoformat() if product.updated_at else None
-        }
+        "data": product_with_discount
     }
 
 # Obtener producto por slug (descripcion amigable)
@@ -464,6 +509,7 @@ async def get_product_by_slug(
 ):
     """
     Obtener un producto por su slug (para URLs amigables).
+    Aplica descuentos activos automáticamente.
     """
     product = db.query(Product).filter(
         Product.slug == slug,
@@ -481,27 +527,80 @@ async def get_product_by_slug(
             }
         )
     
+    # Aplicar descuentos
+    from core.discount_service import apply_discounts_to_products
+    product_with_discount = apply_discounts_to_products([product], db)[0]
+    
+    # Agregar campos adicionales
+    product_with_discount["updated_at"] = product.updated_at.isoformat() if product.updated_at else None
+    
     return {
         "success": True,
         "status_code": 200,
         "message": "Producto obtenido exitosamente",
-        "data": {
-            "id": product.id,
-            "name": product.name,
-            "slug": product.slug,
-            "description": product.description,
-            "price": float(product.price),
-            "stock": product.stock,
-            "category_id": product.category_id,
-            "image_url": product.image_url,
-            "created_at": product.created_at.isoformat() if product.created_at else None,
-            "updated_at": product.updated_at.isoformat() if product.updated_at else None
-        }
+        "data": product_with_discount
     }
     
     
 # ==================== ADMIN ENDPOINTS ====================
 # Requieren autenticación y rol de administrador
+
+# Endpoint para obtener solo IDs y nombres (para desplegables)
+@router.get("/admin/simple-list")
+async def get_products_simple_list(
+    is_active: Optional[bool] = Query(True, description="Filtrar por estado"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Obtener lista simple de productos (solo ID y nombre).
+    Ideal para desplegables/selects en el panel de admin.
+    
+    Requiere autenticación y rol de administrador.
+    
+    - **is_active**: Filtrar por productos activos (default: True)
+    
+    Retorna: Lista de objetos con {id, name}
+    """
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para acceder a este recurso",
+                "error": "FORBIDDEN"
+            }
+        )
+    
+    # Query base
+    query = db.query(Product.id, Product.name)
+    
+    # Filtrar por estado si se especifica
+    if is_active is not None:
+        query = query.filter(Product.is_active == is_active)
+    
+    # Ordenar alfabéticamente
+    query = query.order_by(Product.name.asc())
+    
+    products = query.all()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Lista de productos obtenida exitosamente",
+        "data": {
+            "products": [
+                {
+                    "id": str(p.id),  # Como string para consistencia con descuentos
+                    "name": p.name
+                }
+                for p in products
+            ],
+            "total": len(products)
+        }
+    }
+
 
 # Endpoint para listar TODOS los productos (admin)
 @router.get("/admin/all")

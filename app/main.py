@@ -6,6 +6,8 @@ from fastapi.responses import JSONResponse
 import os
 from pathlib import Path
 from core.config import settings
+from core.database import get_db
+from models.admin_settings import AdminSettings
 
 # Rutas de endpoints importadas
 from routes.auth import router as auth_router
@@ -16,6 +18,8 @@ from routes.addresses import router as addresses_router
 from routes.orders import router as orders_router
 from routes.admin_orders import router as admin_orders_router
 from routes.user import router as user_router
+from routes.admin_settings import router as admin_settings_router
+from routes.public_settings import router as public_settings_router
 
 # Inicializar Firebase Admin SDK
 from core.firebase_service import firebase_service
@@ -43,6 +47,74 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==================== MAINTENANCE MODE MIDDLEWARE ====================
+
+@app.middleware("http")
+async def maintenance_mode_middleware(request: Request, call_next):
+    """
+    Middleware que bloquea peticiones de usuarios normales cuando
+    el modo mantenimiento está activo.
+    Los admins siempre pueden acceder.
+    """
+    # Rutas públicas que siempre deben estar disponibles
+    public_paths = ["/", "/health", "/docs", "/openapi.json", "/static"]
+    
+    # Si es ruta pública, permitir
+    if any(request.url.path.startswith(path) for path in public_paths):
+        return await call_next(request)
+    
+    # Obtener configuración de maintenance
+    db = next(get_db())
+    try:
+        settings_obj = db.query(AdminSettings).first()
+        
+        if settings_obj and settings_obj.maintenance_mode:
+            # Verificar si el usuario es admin
+            auth_header = request.headers.get("Authorization")
+            
+            if not auth_header or not auth_header.startswith("Bearer "):
+                # Usuario no autenticado durante mantenimiento
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "success": False,
+                        "status_code": 503,
+                        "message": settings_obj.maintenance_message,
+                        "error": "MAINTENANCE_MODE"
+                    }
+                )
+            
+            # Si tiene token, verificar si es admin
+            from core.security import decode_token
+            from models.user import User
+            import uuid
+            
+            token = auth_header.replace("Bearer ", "")
+            payload = decode_token(token)
+            
+            if payload:
+                user_id = uuid.UUID(payload.get("sub"))
+                user = db.query(User).filter(User.id == user_id).first()
+                
+                if user and user.is_admin:
+                    # Admin puede acceder durante mantenimiento
+                    return await call_next(request)
+            
+            # Usuario normal durante mantenimiento
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "success": False,
+                    "status_code": 503,
+                    "message": settings_obj.maintenance_message,
+                    "error": "MAINTENANCE_MODE"
+                }
+            )
+    finally:
+        db.close()
+    
+    return await call_next(request)
 
 # ==================== EXCEPTION HANDLERS ====================
 
@@ -114,6 +186,8 @@ app.include_router(carts_router)
 app.include_router(addresses_router)
 app.include_router(orders_router)
 app.include_router(admin_orders_router)
+app.include_router(admin_settings_router)
+app.include_router(public_settings_router)
 app.include_router(user_router)
 
 # Configurar directorio de uploads para servir archivos estáticos
