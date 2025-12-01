@@ -32,7 +32,7 @@ from models.user import User
 from models.addresses import Address
 from models.products import Product, Category
 from models.carts import Cart
-from models.order import Order, OrderItem
+from models.order import Order, OrderItem, CartItem
 from models.email_verification import EmailVerificationToken
 from models.admin_settings import AdminSettings
 
