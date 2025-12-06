@@ -15,7 +15,7 @@ Si solo usas `localhost:8000` recibirás **error 405 Method Not Allowed**.
 Deberías ver algo como:
 ```
 > Ready! You are using Stripe API Version [2025-11-17.clover]. 
-> Your webhook signing secret is whsec_31716ce05cbe39b3aa129d83af3ed543273e5cf542a0c965bf792ef05fdf15e9 (^C to quit)
+> Your webhook signing secret is  (^C to quit)
 ```
 
 Y cuando lleguen eventos verás:
@@ -25,7 +25,7 @@ Y cuando lleguen eventos verás:
 
 **✅ Tu secret ya está configurado en `.env`:**
 ```
-STRIPE_WEBHOOK_SECRET=whsec_31716ce05cbe39b3aa129d83af3ed543273e5cf542a0c965bf792ef05fdf15e9
+STRIPE_WEBHOOK_SECRET=
 ```
 
 ### 2. Probar el webhook con un evento de prueba
