@@ -623,48 +623,6 @@ async def update_max_items_per_order(
     }
 
 
-@router.get("/test-discount/{product_id}")
-async def test_product_discount(
-    product_id: int,
-    db: Session = Depends(get_db),
-    current_admin: User = Depends(get_current_admin_user)
-):
-    """
-    Endpoint de prueba para verificar descuentos en un producto.
-    Muestra el cálculo detallado.
-    """
-    from models.products import Product
-    from core.discount_service import calculate_product_discount
-    
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
-    
-    settings = get_or_create_settings(db)
-    final_price, discount_info = calculate_product_discount(product, settings)
-    
-    return {
-        "success": True,
-        "product": {
-            "id": product.id,
-            "name": product.name,
-            "category_id": product.category_id,
-            "original_price": float(product.price)
-        },
-        "settings": {
-            "global_discount_enabled": settings.global_discount_enabled,
-            "global_discount_percentage": settings.global_discount_percentage,
-            "category_discounts": settings.category_discounts,
-            "product_discounts": settings.product_discounts,
-            "seasonal_offers": settings.seasonal_offers
-        },
-        "calculated": {
-            "final_price": final_price,
-            "discount_info": discount_info
-        }
-    }
-
-
 @router.get("/discounts/summary")
 async def get_discounts_summary(
     db: Session = Depends(get_db),

@@ -20,7 +20,6 @@ class OrderStatus(str, enum.Enum):
 class PaymentMethod(str, enum.Enum):
     STRIPE = "stripe"
     PAYPAL = "paypal"
-    MERCADOPAGO = "mercadopago"
     OPENPAY = "openpay"
     CASH = "cash"                    # Para admin
     TRANSFER = "transfer"            # Para admin

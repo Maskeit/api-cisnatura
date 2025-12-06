@@ -3,7 +3,7 @@
 ## 📦 Características
 
 - **Estados de orden:** 8 estados desde pending hasta delivered
-- **Métodos de pago:** Stripe, PayPal, MercadoPago, OpenPay
+- **Métodos de pago:** Stripe, PayPal, OpenPay
 - **Administración:** Panel completo para gestionar órdenes
 - **Estadísticas:** Ganancias por período, productos más vendidos
 - **Webhooks:** Preparado para integración con pasarelas de pago
@@ -31,7 +31,6 @@
 
 - **Stripe** (stripe)
 - **PayPal** (paypal)
-- **MercadoPago** (mercadopago)
 - **OpenPay** (openpay)
 - **Efectivo** (cash) - Solo admin
 - **Transferencia** (transfer) - Solo admin

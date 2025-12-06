@@ -23,7 +23,7 @@ class OrderStatus(str):
 class PaymentMethod(str):
     STRIPE = "stripe"
     PAYPAL = "paypal"
-    MERCADOPAGO = "mercadopago"
+
     OPENPAY = "openpay"
     CASH = "cash"
     TRANSFER = "transfer"
@@ -62,7 +62,7 @@ class OrderCreate(BaseModel):
     @validator('payment_method')
     def validate_payment_method(cls, v):
         """Validar método de pago"""
-        valid_methods = ["stripe", "paypal", "mercadopago", "openpay"]
+        valid_methods = ["stripe", "paypal", "openpay"]
         if v not in valid_methods:
             raise ValueError(f"Método de pago debe ser uno de: {', '.join(valid_methods)}")
         return v

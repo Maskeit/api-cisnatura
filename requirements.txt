@@ -35,3 +35,6 @@ firebase-admin==6.5.0
 
 # Migraciones de Base de Datos
 alembic==1.13.1
+
+# Actualización de Stripe
+stripe==13.2.0
