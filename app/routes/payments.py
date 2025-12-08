@@ -17,6 +17,7 @@ from core.payment_service import payment_service
 from core.config import settings
 from core.redis_service import CartService
 from core.discount_service import calculate_product_discount, get_shipping_price
+from core.notification_email_service import notification_service
 from models.user import User
 from models.order import Order, OrderItem, OrderStatus, PaymentMethod
 from models.addresses import Address
@@ -314,9 +315,76 @@ async def _process_payment_success(
             product.stock -= quantity
     
     db.commit()
+    db.refresh(new_order)
     cart_service.clear_cart(user_id)
     
     logger.info(f"Order {new_order.id} created from session {session_id}")
+    
+    # Enviar notificaciones por correo
+    try:
+        # Obtener datos del usuario y dirección para los correos
+        user = db.query(User).filter(User.id == user_id).first()
+        address = db.query(Address).filter(Address.id == address_id).first()
+        
+        if user and address:
+            # Preparar items para el correo
+            email_items = []
+            for item in new_order.order_items:
+                email_items.append({
+                    "name": item.product_name,
+                    "quantity": item.quantity,
+                    "price": float(item.unit_price),
+                    "subtotal": float(item.subtotal)
+                })
+            
+            # Preparar dirección para el correo
+            shipping_address = {
+                "street": address.street,
+                "city": address.city,
+                "state": address.state,
+                "postal_code": address.postal_code,
+                "country": address.country
+            }
+            
+            # 1. Enviar confirmación al cliente
+            await notification_service.send_order_confirmation_to_customer(
+                customer_email=user.email,
+                customer_name=user.full_name,
+                order_id=new_order.id,
+                order_number=f"ORD-{new_order.created_at.strftime('%Y%m')}-{new_order.id:04d}",
+                items=email_items,
+                subtotal=new_order.subtotal,
+                shipping_cost=new_order.shipping_cost,
+                total=new_order.total,
+                shipping_address=shipping_address
+            )
+            logger.info(f"Customer notification sent for order {new_order.id}")
+            
+            # 2. Enviar notificación al admin
+            admin_settings = db.query(AdminSettings).first()
+            if admin_settings and hasattr(admin_settings, 'admin_notification_email'):
+                admin_email = admin_settings.admin_notification_email
+            else:
+                # Fallback: obtener email del primer admin
+                admin_user = db.query(User).filter(User.is_admin == True).first()
+                admin_email = admin_user.email if admin_user else None
+            
+            if admin_email:
+                await notification_service.send_new_order_notification_to_admin(
+                    admin_email=admin_email,
+                    order_id=new_order.id,
+                    order_number=f"ORD-{new_order.created_at.strftime('%Y%m')}-{new_order.id:04d}",
+                    customer_name=user.full_name,
+                    customer_email=user.email,
+                    items_count=len(new_order.order_items),
+                    total=new_order.total,
+                    payment_method="Stripe"
+                )
+                logger.info(f"Admin notification sent for order {new_order.id}")
+            
+    except Exception as email_error:
+        # Log error pero no falla la creación de la orden
+        logger.error(f"Error sending notification emails for order {new_order.id}: {str(email_error)}")
 
 
 async def _handle_payment_failure(db: Session, session_id: str, metadata: dict):
