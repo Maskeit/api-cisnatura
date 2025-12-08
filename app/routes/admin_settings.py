@@ -15,6 +15,7 @@ from schemas.admin_settings import (
     AdminSettingsResponse,
     UpdateMaintenanceMode,
     UpdateShippingPrice,
+    UpdateCategoriesNoShipping,
     UpdateGlobalDiscount,
     AddCategoryDiscount,
     AddProductDiscount,
@@ -281,6 +282,30 @@ async def update_shipping_price(
         "data": {
             "shipping_price": settings.shipping_price,
             "free_shipping_threshold": settings.free_shipping_threshold
+        }
+    }
+
+
+@router.put("/shipping/no-shipping-categories")
+async def update_categories_no_shipping(
+    data: UpdateCategoriesNoShipping,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin_user)
+):
+    """Actualizar categorías que no pagan envío (productos digitales)"""
+    settings = get_or_create_settings(db)
+    settings.categories_no_shipping = data.category_ids
+    settings.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(settings)
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Categorías sin envío actualizadas exitosamente",
+        "data": {
+            "categories_no_shipping": settings.categories_no_shipping
         }
     }
 

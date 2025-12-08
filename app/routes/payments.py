@@ -61,6 +61,7 @@ async def create_stripe_checkout_session(
         
         items = []
         subtotal = Decimal("0.00")
+        category_ids = []
         admin_settings = db.query(AdminSettings).first()
         
         for product_id_str, cart_item in cart_data.items():
@@ -82,6 +83,9 @@ async def create_stripe_checkout_session(
             item_subtotal = Decimal(str(final_price)) * quantity
             subtotal += item_subtotal
             
+            if product.category_id not in category_ids:
+                category_ids.append(product.category_id)
+            
             items.append({
                 "title": product.name,
                 "quantity": quantity,
@@ -89,7 +93,7 @@ async def create_stripe_checkout_session(
                 "currency_id": "MXN"
             })
         
-        shipping_info = get_shipping_price(db, float(subtotal))
+        shipping_info = get_shipping_price(db, float(subtotal), category_ids)
         shipping_cost = Decimal(str(shipping_info["shipping_price"]))
         
         if shipping_cost > 0:

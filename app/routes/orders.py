@@ -118,6 +118,7 @@ async def create_order(
     # Validar productos y calcular totales
     order_items_data = []
     subtotal = Decimal("0.00")
+    category_ids = []
     
     for product_id_str, cart_item in cart_data.items():
         product_id = int(product_id_str)
@@ -151,6 +152,9 @@ async def create_order(
         item_subtotal = Decimal(str(product.price)) * quantity
         subtotal += item_subtotal
         
+        if product.category_id not in category_ids:
+            category_ids.append(product.category_id)
+        
         order_items_data.append({
             "product_id": product.id,
             "product_name": product.name,
@@ -162,7 +166,7 @@ async def create_order(
     
     # Calcular costo de envío según configuración del admin
     from core.discount_service import get_shipping_price
-    shipping_info = get_shipping_price(db, float(subtotal))
+    shipping_info = get_shipping_price(db, float(subtotal), category_ids)
     shipping_cost = Decimal(str(shipping_info["shipping_price"]))
     total = subtotal + shipping_cost
     

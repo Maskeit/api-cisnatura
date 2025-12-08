@@ -218,10 +218,10 @@ def get_shipping_price(db: Session, order_total: float = 0.0, category_ids: list
     if not settings:
         return {"shipping_price": 0.0, "is_free": False}
     
-    # Verificar si todas las categorías son sin envío
-    if category_ids and settings.no_shipping_categories:
+    # Verificar si todas las categorías son sin envío (productos digitales)
+    if category_ids and settings.categories_no_shipping:
         all_no_shipping = all(
-            str(cat_id) in [str(c) for c in settings.no_shipping_categories]
+            int(cat_id) in settings.categories_no_shipping
             for cat_id in category_ids
         )
         if all_no_shipping:
@@ -229,7 +229,7 @@ def get_shipping_price(db: Session, order_total: float = 0.0, category_ids: list
                 "shipping_price": 0.0,
                 "is_free": True,
                 "threshold": settings.free_shipping_threshold,
-                "message": "Envío no aplicable (productos digitales)"
+                "message": "Envío no aplicable"
             }
     
     # Verificar si califica para envío gratis por monto
@@ -239,6 +239,15 @@ def get_shipping_price(db: Session, order_total: float = 0.0, category_ids: list
             "is_free": True,
             "threshold": settings.free_shipping_threshold,
             "message": f"¡Envío gratis por compra mayor a ${settings.free_shipping_threshold}!"
+        }
+    
+    # para el caso en el que el unico producto es de envio gratuito
+    if settings.shipping_price is None:
+        return {
+            "shipping_price": 0.0,
+            "is_free": True,
+            "threshold": settings.free_shipping_threshold,
+            "message": "Envío no aplicable"
         }
     
     return {
