@@ -1,15 +1,18 @@
 """
 Endpoints de administración para órdenes.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, File, UploadFile, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, cast, Date
 from typing import List, Optional
 from datetime import datetime, timedelta
 from decimal import Decimal
+import os
+import uuid
 
 from core.database import get_db
 from core.dependencies import get_current_user
+from core.notification_email_service import notification_service
 from models.user import User
 from models.order import Order, OrderItem, OrderStatus, PaymentMethod
 from models.addresses import Address
@@ -18,6 +21,10 @@ from schemas.orders import (
     OrderStatusUpdate,
     OrderAdminResponse,
     OrderStatsResponse
+)
+from schemas.order_notifications import (
+    ShippingNotificationRequest,
+    NotificationResponse
 )
 
 router = APIRouter(
@@ -457,3 +464,155 @@ async def delete_order(
         "message": "Orden eliminada exitosamente",
         "data": None
     }
+
+
+@router.post("/{order_id}/notify-shipping", response_model=NotificationResponse)
+async def notify_order_shipped(
+    order_id: int,
+    tracking_number: str = Form(...),
+    shipping_carrier: str = Form(...),
+    tracking_url: Optional[str] = Form(None),
+    admin_notes: Optional[str] = Form(None),
+    tracking_pdf: Optional[UploadFile] = File(None),
+    admin_user: User = Depends(verify_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Notificar al cliente que su pedido ha sido enviado.
+    
+    - Actualiza tracking_number en la orden
+    - Cambia el estado a SHIPPED si aún no lo está
+    - Guarda archivo PDF de guía si se proporciona
+    - Envía correo al cliente con información de rastreo y PDF adjunto
+    
+    Args:
+        order_id: ID de la orden
+        tracking_number: Número de guía/rastreo
+        shipping_carrier: Nombre de la paquetería
+        tracking_url: URL de rastreo (opcional)
+        admin_notes: Notas internas para el correo (opcional)
+        tracking_pdf: Archivo PDF de la guía (opcional)
+    """
+    # Buscar la orden
+    order = db.query(Order).filter(Order.id == order_id).first()
+    
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "status_code": 404,
+                "message": "Orden no encontrada",
+                "error": "ORDER_NOT_FOUND"
+            }
+        )
+    
+    # Verificar que la orden esté pagada
+    if order.payment_status != "paid":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": "La orden debe estar pagada para notificar envío",
+                "error": "ORDER_NOT_PAID"
+            }
+        )
+    
+    # Procesar archivo PDF si se proporciona
+    pdf_path = None
+    if tracking_pdf:
+        # Validar que sea PDF
+        if not tracking_pdf.filename.lower().endswith('.pdf'):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "status_code": 400,
+                    "message": "El archivo debe ser un PDF",
+                    "error": "INVALID_FILE_TYPE"
+                }
+            )
+        
+        # Crear directorio de guías si no existe
+        guides_dir = "uploads/tracking_guides"
+        os.makedirs(guides_dir, exist_ok=True)
+        
+        # Generar nombre único para el archivo
+        file_extension = tracking_pdf.filename.split('.')[-1]
+        unique_filename = f"guide_order_{order_id}_{uuid.uuid4().hex[:8]}.{file_extension}"
+        pdf_path = os.path.join(guides_dir, unique_filename)
+        
+        # Guardar archivo
+        try:
+            with open(pdf_path, "wb") as f:
+                content = await tracking_pdf.read()
+                f.write(content)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "success": False,
+                    "status_code": 500,
+                    "message": f"Error al guardar archivo: {str(e)}",
+                    "error": "FILE_SAVE_ERROR"
+                }
+            )
+    
+    # Actualizar orden con información de envío
+    order.tracking_number = tracking_number
+    
+    # Actualizar notas si se proporcionaron
+    if admin_notes:
+        if order.admin_notes:
+            order.admin_notes += f"\n\n[Envío] {admin_notes}"
+        else:
+            order.admin_notes = f"[Envío] {admin_notes}"
+    
+    # Cambiar estado a SHIPPED si no lo está
+    if order.status not in [OrderStatus.SHIPPED, OrderStatus.DELIVERED]:
+        order.status = OrderStatus.SHIPPED
+        order.shipped_at = datetime.now()
+    
+    db.commit()
+    db.refresh(order)
+    
+    # Obtener información del usuario
+    user = db.query(User).filter(User.id == order.user_id).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "status_code": 404,
+                "message": "Usuario no encontrado",
+                "error": "USER_NOT_FOUND"
+            }
+        )
+    
+    # Enviar notificación por correo
+    email_sent = False
+    try:
+        email_sent = await notification_service.send_shipping_notification_to_customer(
+            customer_email=user.email,
+            customer_name=user.full_name,
+            order_number=f"ORD-{order.created_at.strftime('%Y%m')}-{order.id:04d}",
+            tracking_number=tracking_number,
+            shipping_carrier=shipping_carrier,
+            tracking_url=tracking_url,
+            admin_notes=admin_notes,
+            pdf_attachment_path=pdf_path
+        )
+    except Exception as e:
+        # Log error pero no falla la operación
+        print(f"Error sending shipping notification email: {str(e)}")
+        email_sent = False
+    
+    return NotificationResponse(
+        success=True,
+        message="Orden marcada como enviada y notificación enviada al cliente" if email_sent 
+                else "Orden marcada como enviada (error al enviar correo)",
+        email_sent=email_sent,
+        recipient=user.email if email_sent else None
+    )

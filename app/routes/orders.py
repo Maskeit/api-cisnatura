@@ -87,7 +87,7 @@ async def create_order(
     cart_service = CartService()
     cart_data = cart_service.get_cart(str(current_user.id))
     
-    if not cart_data or not cart_data.get("items"):
+    if not cart_data:
         raise HTTPException(
             status_code=400,
             detail={
@@ -118,9 +118,11 @@ async def create_order(
     # Validar productos y calcular totales
     order_items_data = []
     subtotal = Decimal("0.00")
+    category_ids = []
     
-    for product_id_str, quantity in cart_data["items"].items():
+    for product_id_str, cart_item in cart_data.items():
         product_id = int(product_id_str)
+        quantity = cart_item["quantity"]
         product = db.query(Product).filter(Product.id == product_id).first()
         
         if not product:
@@ -150,6 +152,9 @@ async def create_order(
         item_subtotal = Decimal(str(product.price)) * quantity
         subtotal += item_subtotal
         
+        if product.category_id not in category_ids:
+            category_ids.append(product.category_id)
+        
         order_items_data.append({
             "product_id": product.id,
             "product_name": product.name,
@@ -159,20 +164,22 @@ async def create_order(
             "subtotal": item_subtotal
         })
     
-    # Calcular costos adicionales (puedes ajustar esto)
-    shipping_cost = Decimal("100.00")  # Costo fijo de envío
-    tax = subtotal * Decimal("0.16")   # IVA 16%
-    total = subtotal + shipping_cost + tax
+    # Calcular costo de envío según configuración del admin
+    from core.discount_service import get_shipping_price
+    shipping_info = get_shipping_price(db, float(subtotal), category_ids)
+    shipping_cost = Decimal(str(shipping_info["shipping_price"]))
+    total = subtotal + shipping_cost
     
-    # Crear orden
+    # Crear orden en estado PENDING (esperando que se abra el checkout)
     new_order = Order(
         user_id=current_user.id,
         address_id=order_data.address_id,
         payment_method=PaymentMethod(order_data.payment_method),
-        status=OrderStatus.PENDING,
+        status=OrderStatus.PENDING,  # PENDING = orden creada pero no se abrió checkout
+        payment_status="awaiting_checkout",  # Indica que falta abrir el checkout
         subtotal=subtotal,
         shipping_cost=shipping_cost,
-        tax=tax,
+        tax=Decimal("0.00"),  # Los productos ya incluyen impuestos
         total=total,
         notes=order_data.notes
     )
@@ -195,13 +202,13 @@ async def create_order(
     db.commit()
     db.refresh(new_order)
     
-    # Limpiar carrito de Redis
-    cart_service.clear_cart(str(current_user.id))
+    # NO limpiar el carrito todavía - se limpiará cuando el webhook confirme el pago
+    # cart_service.clear_cart(str(current_user.id))
     
     return {
         "success": True,
         "status_code": 201,
-        "message": "Orden creada exitosamente",
+        "message": "Orden creada - Procede al pago para confirmar",
         "data": format_order_response(new_order, db)
     }
 

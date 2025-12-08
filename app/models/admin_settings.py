@@ -21,6 +21,7 @@ class AdminSettings(Base):
     # Precio de envío (en la moneda que uses, ej: USD, MXN, etc)
     shipping_price = Column(Float, default=0.0, nullable=False)
     free_shipping_threshold = Column(Float, default=None, nullable=True)  # Envío gratis si compra supera este monto
+    categories_no_shipping = Column(JSON, default=[], nullable=False)  # IDs de categorías que no pagan envío (productos digitales)
     
     # Descuento global (porcentaje 0-100)
     global_discount_enabled = Column(Boolean, default=False, nullable=False)

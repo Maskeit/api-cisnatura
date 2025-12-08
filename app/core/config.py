@@ -30,9 +30,14 @@ class Settings(BaseSettings):
     # Frontend URL (para links de verificación)
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     
+    # Payment Provider Configuration
+    PAYMENT_PROVIDER: str = os.getenv("PAYMENT_PROVIDER", "stripe")
+    
     # Stripe
-    STRIPE_API_KEY: str = os.getenv("STRIPE_API_KEY", "")
+    STRIPE_API_KEY: str = os.getenv("STRIPE_SECRET_KEY", os.getenv("STRIPE_API_KEY", ""))
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    
+
     
     # Upload Configuration
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "/app/uploads")

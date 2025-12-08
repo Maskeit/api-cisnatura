@@ -39,7 +39,7 @@ def get_products_data(product_ids: List[int], db: Session) -> Dict[int, Product]
 def format_cart_response(user_id: str, db: Session) -> dict:
     """
     Formatear respuesta del carrito desde Redis.
-    Aplica descuentos activos a los productos.
+    Aplica descuentos activos a los productos y calcula envío.
     """
     # Obtener carrito desde Redis
     cart_data = CartService.get_cart(user_id)
@@ -51,7 +51,14 @@ def format_cart_response(user_id: str, db: Session) -> dict:
             "total_items": 0,
             "total_amount": 0.0,
             "total_discount": 0.0,
-            "total_without_discount": 0.0
+            "total_without_discount": 0.0,
+            "shipping_cost": 0.0,
+            "grand_total": 0.0,
+            "shipping_info": {
+                "shipping_price": 0.0,
+                "is_free": True,
+                "message": "Carrito vacío"
+            }
         }
     
     # Obtener IDs de productos
@@ -59,7 +66,7 @@ def format_cart_response(user_id: str, db: Session) -> dict:
     products = get_products_data(product_ids, db)
     
     # Aplicar descuentos a los productos
-    from core.discount_service import calculate_product_discount
+    from core.discount_service import calculate_product_discount, get_shipping_price
     from models.admin_settings import AdminSettings
     
     settings = db.query(AdminSettings).first()
@@ -70,6 +77,7 @@ def format_cart_response(user_id: str, db: Session) -> dict:
     total_amount = 0.0
     total_discount = 0.0
     total_without_discount = 0.0
+    category_ids = []
     
     for product_id_str, cart_item in cart_data.items():
         product_id = int(product_id_str)
@@ -78,6 +86,10 @@ def format_cart_response(user_id: str, db: Session) -> dict:
         # Solo incluir productos activos
         if not product:
             continue
+        
+        # Recolectar category_ids para cálculo de envío
+        if product.category_id and product.category_id not in category_ids:
+            category_ids.append(product.category_id)
         
         quantity = cart_item["quantity"]
         original_price = float(product.price)
@@ -104,6 +116,7 @@ def format_cart_response(user_id: str, db: Session) -> dict:
                 "price": final_price,  # Precio con descuento aplicado
                 "original_price": original_price,  # Precio original
                 "stock": product.stock,
+                "category_id": product.category_id,
                 "image_url": product.image_url,
                 "is_active": product.is_active,
                 "has_discount": discount_info is not None,
@@ -119,13 +132,21 @@ def format_cart_response(user_id: str, db: Session) -> dict:
         total_discount += item_discount
         total_without_discount += subtotal_without_discount
     
+    # Calcular costo de envío basado en categorías y total
+    shipping_info = get_shipping_price(db, total_amount, category_ids)
+    shipping_cost = shipping_info.get("shipping_price", 0.0)
+    grand_total = round(total_amount + shipping_cost, 2)
+    
     return {
         "user_id": user_id,
         "items": items,
         "total_items": total_items,
-        "total_amount": round(total_amount, 2),  # Total con descuentos
+        "total_amount": round(total_amount, 2),  # Total con descuentos (sin envío)
         "total_discount": round(total_discount, 2),  # Total ahorrado
-        "total_without_discount": round(total_without_discount, 2)  # Total original
+        "total_without_discount": round(total_without_discount, 2),  # Total original
+        "shipping_cost": shipping_cost,  # Costo de envío
+        "grand_total": grand_total,  # Total final incluyendo envío
+        "shipping_info": shipping_info  # Información detallada de envío
     }
 
 
@@ -173,7 +194,9 @@ async def get_cart_summary(
         "message": "Resumen del carrito",
         "data": {
             "total_items": cart_data["total_items"],
-            "total_amount": cart_data["total_amount"]
+            "total_amount": cart_data["total_amount"],
+            "shipping_cost": cart_data["shipping_cost"],
+            "grand_total": cart_data["grand_total"]
         }
     }
 

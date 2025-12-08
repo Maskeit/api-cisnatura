@@ -1,0 +1,2 @@
+# Este directorio almacena las guías de rastreo en PDF
+# Los archivos se guardan con el formato: guide_order_{order_id}_{uuid}.pdf

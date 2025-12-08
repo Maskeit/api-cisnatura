@@ -44,6 +44,7 @@ class AdminSettingsResponse(BaseModel):
     # Shipping
     shipping_price: float
     free_shipping_threshold: Optional[float]
+    categories_no_shipping: List[int]
     
     # Global discount
     global_discount_enabled: bool
@@ -88,6 +89,11 @@ class UpdateShippingPrice(BaseModel):
     """Actualizar precio de envío"""
     shipping_price: float = Field(..., ge=0, description="Precio de envío")
     free_shipping_threshold: Optional[float] = Field(None, ge=0, description="Compra mínima para envío gratis")
+
+
+class UpdateCategoriesNoShipping(BaseModel):
+    """Actualizar categorías sin costo de envío"""
+    category_ids: List[int] = Field(..., description="IDs de categorías que no pagan envío")
 
 
 class UpdateGlobalDiscount(BaseModel):

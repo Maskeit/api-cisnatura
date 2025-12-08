@@ -74,13 +74,26 @@ async def get_public_settings(db: Session = Depends(get_db)):
 @router.get("/shipping/calculate")
 async def calculate_shipping(
     total: float = Query(..., ge=0, description="Total de la orden"),
+    category_ids: str = Query(None, description="IDs de categorías separados por coma (ej: 1,2,3)"),
     db: Session = Depends(get_db)
 ):
     """
-    Calcular costo de envío según el total de la orden.
+    Calcular costo de envío según el total de la orden y categorías de productos.
     Muestra si califica para envío gratis.
+    
+    Parámetros:
+    - total: Total de la orden
+    - category_ids: IDs de categorías separados por coma (opcional)
     """
-    shipping_info = get_shipping_price(db, total)
+    # Parsear category_ids si se proporcionan
+    parsed_category_ids = None
+    if category_ids:
+        try:
+            parsed_category_ids = [int(cid.strip()) for cid in category_ids.split(",")]
+        except ValueError:
+            pass
+    
+    shipping_info = get_shipping_price(db, total, parsed_category_ids)
     
     return {
         "success": True,

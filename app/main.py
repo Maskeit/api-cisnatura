@@ -20,10 +20,32 @@ from routes.admin_orders import router as admin_orders_router
 from routes.user import router as user_router
 from routes.admin_settings import router as admin_settings_router
 from routes.public_settings import router as public_settings_router
+from routes.payments import router as payments_router
 
 # Inicializar Firebase Admin SDK
 from core.firebase_service import firebase_service
 firebase_service.initialize()
+
+# Inicializar Payment Service
+from core.payment_service import payment_service
+
+def initialize_payment_service():
+    """
+    Inicializa el servicio de pagos según el proveedor configurado.
+    """
+    provider = settings.PAYMENT_PROVIDER.lower()
+    
+    if provider == "stripe":
+        payment_service.initialize(
+            provider_name="stripe",
+            api_key=settings.STRIPE_API_KEY,
+            webhook_secret=settings.STRIPE_WEBHOOK_SECRET
+        )
+    else:
+        raise ValueError(f"Unsupported payment provider: {provider}")
+
+# Inicializar al arrancar la app
+initialize_payment_service()
 
 app = FastAPI(
     title=settings.API_TITLE,
@@ -189,6 +211,7 @@ app.include_router(admin_orders_router)
 app.include_router(admin_settings_router)
 app.include_router(public_settings_router)
 app.include_router(user_router)
+app.include_router(payments_router)
 
 # Configurar directorio de uploads para servir archivos estáticos
 # IMPORTANTE: Debe ir después de los routers para no capturar las rutas de API

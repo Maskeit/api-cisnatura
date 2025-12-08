@@ -201,13 +201,14 @@ def apply_discounts_to_products(
     return result
 
 
-def get_shipping_price(db: Session, order_total: float = 0.0) -> Dict:
+def get_shipping_price(db: Session, order_total: float = 0.0, category_ids: list = None) -> Dict:
     """
     Obtener precio de envío según configuraciones y total de la orden.
     
     Args:
         db: Sesión de base de datos
         order_total: Total de la orden
+        category_ids: IDs de categorías de productos en el carrito
     
     Returns:
         Dict con shipping_price y is_free
@@ -217,13 +218,36 @@ def get_shipping_price(db: Session, order_total: float = 0.0) -> Dict:
     if not settings:
         return {"shipping_price": 0.0, "is_free": False}
     
-    # Verificar si califica para envío gratis
+    # Verificar si todas las categorías son sin envío (productos digitales)
+    if category_ids and settings.categories_no_shipping:
+        all_no_shipping = all(
+            int(cat_id) in settings.categories_no_shipping
+            for cat_id in category_ids
+        )
+        if all_no_shipping:
+            return {
+                "shipping_price": 0.0,
+                "is_free": True,
+                "threshold": settings.free_shipping_threshold,
+                "message": "Envío no aplicable"
+            }
+    
+    # Verificar si califica para envío gratis por monto
     if settings.free_shipping_threshold and order_total >= settings.free_shipping_threshold:
         return {
             "shipping_price": 0.0,
             "is_free": True,
             "threshold": settings.free_shipping_threshold,
             "message": f"¡Envío gratis por compra mayor a ${settings.free_shipping_threshold}!"
+        }
+    
+    # para el caso en el que el unico producto es de envio gratuito
+    if settings.shipping_price is None:
+        return {
+            "shipping_price": 0.0,
+            "is_free": True,
+            "threshold": settings.free_shipping_threshold,
+            "message": "Envío no aplicable"
         }
     
     return {
