@@ -209,7 +209,7 @@ class EmailService:
         Returns:
             bool: True si se envió correctamente
         """
-        reset_url = f"{self.frontend_url}/auth/reset-password?token={reset_token}"
+        reset_url = f"{self.frontend_url}/reset-password?token={reset_token}"
         
         subject = "Recuperación de contraseña - Cisnatura"
         

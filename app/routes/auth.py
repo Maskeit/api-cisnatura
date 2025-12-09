@@ -19,7 +19,9 @@ from schemas.auth import (
     VerifyEmailRequest,
     ResendVerificationRequest,
     UserResponse,
-    GoogleLoginRequest
+    GoogleLoginRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest
 )
 
 # Security scheme para logout
@@ -175,6 +177,48 @@ async def verify_email(
         "message": "Email verificado exitosamente. Ya puedes iniciar sesión.",
         "data": {
             "email_verified": True
+        }
+    }
+
+# ==================== VERIFICACION DE EMAIL PARA RESET PASSWORD
+@router.post("/validate-email-reset")
+async def validate_reset_token(
+    request: VerifyEmailRequest,  # Reutilizas este schema
+    db: Session = Depends(get_db)
+):
+    """
+    Validar que el token de reset sea válido antes de mostrar el formulario.
+    """
+    token_record = db.query(EmailVerificationToken).filter(
+        EmailVerificationToken.token == request.token,
+        EmailVerificationToken.is_used == False
+    ).first()
+    
+    if not token_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "Token inválido o ya utilizado",
+                "error": "INVALID_TOKEN"
+            }
+        )
+    
+    if token_record.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "El token ha expirado",
+                "error": "TOKEN_EXPIRED"
+            }
+        )
+    
+    return {
+        "success": True,
+        "message": "Token válido",
+        "data": {
+            "email": token_record.user.email  # Para mostrarlo en el formulario
         }
     }
 
@@ -388,7 +432,139 @@ async def logout(
         "message": "Sesión cerrada exitosamente"
     }
 
+# ==================== SOLICITUD PARA RECUPERAR CUENTA ===================
+@router.post("/recover-password")
+async def recover_pass(
+    user_data:ForgotPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Docstring para recover_pass
+    
+    :param user_data: Descripción
+    :type user_data: ForgotPasswordRequest
+    :param db: Descripción
+    :type db: Session
+    """
+    # Verificar si el email ya existe y si no entonces notificar
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if not existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": "Este email no existe",
+                "error": "EMAIL_NOT_EXISTS"
+            }
+        )
+    
+    # Generar token de verificación
+    verification_token = EmailVerificationToken.generate_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    
+    token_record = EmailVerificationToken(
+        user_id=existing_user.id,
+        token=verification_token,
+        expires_at=expires_at
+    )
+    
+    db.add(token_record)
+    db.commit()
+    # Enviar email de recuperación de contraseña
+    try:
+        await email_service.send_password_reset_email(
+            to_email=existing_user.email,
+            full_name=existing_user.full_name,
+            reset_token=verification_token
+        )
+    except Exception as e:
+        print(f"Error al enviar email de recuperación: {e}")
+        # No falla la solicitud si el email no se envía
+    
+    return {
+        "success": True,
+        "status_code": 201,
+        "message": "Usuario validado exitosamente. Revisa tu correo para verificar tu cuenta.",
+        "data": {
+            "user_id": str(existing_user.id),
+            "email": existing_user.email,
+            "email_verified": existing_user.email_verified
+        }
+    }
+    # retornar verify-email para poder reestablecer contrasena
 
+# ==================== CAMBIO DE CONTRASENA ======================
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,  # Ya tienes este schema
+    db: Session = Depends(get_db)
+):
+    """
+    Resetear contraseña usando el token del email.
+    """
+    # 1. Buscar token
+    token_record = db.query(EmailVerificationToken).filter(
+        EmailVerificationToken.token == request.token,
+        EmailVerificationToken.is_used == False
+    ).first()
+    
+    if not token_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "Token inválido o ya utilizado",
+                "error": "INVALID_TOKEN"
+            }
+        )
+    
+    # 2. Verificar expiración
+    if token_record.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "message": "El token ha expirado. Solicita uno nuevo.",
+                "error": "TOKEN_EXPIRED"
+            }
+        )
+    
+    # 3. Obtener usuario
+    user = db.query(User).filter(User.id == token_record.user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "success": False,
+                "message": "Usuario no encontrado",
+                "error": "USER_NOT_FOUND"
+            }
+        )
+    
+    # 4. Actualizar contraseña
+    user.hashed_password = hash_password(request.new_password)
+    
+    # 5. Marcar token como usado
+    token_record.is_used = True
+    token_record.used_at = datetime.now(timezone.utc)
+    
+    # 6. Invalidar todos los tokens de acceso anteriores (opcional pero recomendado)
+    # Esto fuerza al usuario a hacer login nuevamente
+    from core.redis_service import TokenBlacklistService
+    # TokenBlacklistService.revoke_all_user_tokens(str(user.id))
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Contraseña actualizada exitosamente. Ya puedes iniciar sesión.",
+        "data": {
+            "email": user.email
+        }
+    }    
+    
 # ==================== GOOGLE AUTH ====================
 
 @router.post("/google-login")
