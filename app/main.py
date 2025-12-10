@@ -47,11 +47,17 @@ def initialize_payment_service():
 # Inicializar al arrancar la app
 initialize_payment_service()
 
+docs_url = "/docs" if os.getenv("ENV") == "development" else None
+redoc_url = "/redoc" if os.getenv("ENV") == "development" else None
+openapi_url = "/openapi.json" if os.getenv("ENV") == "development" else None
+
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description=settings.API_DESCRIPTION,
-    docs_url="/docs",
+    docs_url=docs_url,
+    redoc_url=redoc_url,
+    openapi_url=openapi_url,
     redirect_slashes=False  # Evita redirects 307
 )
 
