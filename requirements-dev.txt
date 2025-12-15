@@ -1,0 +1,18 @@
+# Herramientas de desarrollo y análisis de seguridad
+
+# Análisis estático de vulnerabilidades
+pbr
+bandit[toml]==1.7.5
+
+# Verificación de vulnerabilidades en dependencias
+pip-audit>=2.6.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Análisis de código
+pylint==3.0.3
+black==25.12.0
+isort==5.13.2

@@ -3,12 +3,14 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 
 from sqlalchemy.orm import Session
 from typing import Optional
+from datetime import datetime, timedelta
 from core.database import get_db
 from models.products import Product, Category
 from decimal import Decimal
 from core.dependencies import get_current_admin_user
 from models.user import User
 from schemas.products import ProductCreate, ProductUpdate, CategoryCreate, CategoryUpdate
+from core.storage import storage_service
 
 router = APIRouter(
     prefix="/products",
@@ -251,6 +253,9 @@ async def update_category(
         category.description = category_data.description
     
     if category_data.image_url is not None:
+        # Si hay una imagen antigua, eliminarla antes de asignar la nueva
+        if category.image_url:
+            storage_service.delete_file(category.image_url)
         category.image_url = category_data.image_url
     
     if category_data.is_active is not None:
@@ -319,19 +324,114 @@ async def delete_category(
         )
     
     # Soft delete: solo desactivar la categoría
+    # NOTA: No eliminamos la imagen porque puede ser reactivada
     category.is_active = False
     db.commit()
     
     return {
         "success": True,
         "status_code": 200,
-        "message": "Categoría eliminada exitosamente",
+        "message": "Categoría desactivada exitosamente",
         "data": {
             "id": category.id,
             "name": category.name,
             "is_active": category.is_active
         }
     }
+
+
+@router.delete("/categories/admin/{category_id}/permanent")
+async def delete_category_permanent(
+    category_id: int,
+    force: bool = Query(False, description="Forzar eliminación incluso si tiene productos asociados"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Eliminar categoría permanentemente (hard delete).
+    Solo administradores.
+    
+    ⚠️ PRECAUCIÓN: Esta acción es IRREVERSIBLE.
+    
+    Por defecto, NO se puede eliminar una categoría que tenga productos asociados.
+    Use el parámetro ?force=true para forzar la eliminación.
+    
+    Casos de uso:
+    - Limpiar categorías de prueba
+    - Eliminar categorías duplicadas
+    - Eliminar categorías inactivas sin productos
+    """
+    # Buscar la categoría
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "status_code": 404,
+                "message": "Categoría no encontrada",
+                "error": "CATEGORY_NOT_FOUND"
+            }
+        )
+    
+    # Verificar si tiene productos asociados
+    products_count = db.query(Product).filter(Product.category_id == category_id).count()
+    
+    if products_count > 0 and not force:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": f"No se puede eliminar la categoría porque tiene {products_count} producto(s) asociado(s)",
+                "error": "CATEGORY_HAS_PRODUCTS",
+                "data": {
+                    "products_count": products_count,
+                    "suggestion": "Use el parámetro ?force=true para forzar la eliminación"
+                }
+            }
+        )
+    
+    # Guardar datos antes de eliminar
+    category_name = category.name
+    category_image = category.image_url
+    
+    try:
+        # Eliminar la categoría permanentemente
+        db.delete(category)
+        db.commit()
+        
+        # Eliminar la imagen física del disco
+        if category_image:
+            storage_service.delete_file(category_image)
+        
+        return {
+            "success": True,
+            "status_code": 200,
+            "message": "Categoría eliminada permanentemente",
+            "data": {
+                "id": category_id,
+                "name": category_name,
+                "had_products": products_count > 0,
+                "products_count": products_count
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error eliminando categoría {category_id}: {str(e)}")
+        
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "status_code": 500,
+                "message": "Error al eliminar categoría permanentemente",
+                "error": "DATABASE_ERROR",
+                "details": str(e)
+            }
+        )
 
 
 @router.get("/categories/admin/simple-list")
@@ -874,6 +974,9 @@ async def update_product(
         product.stock = product_data.stock
     
     if product_data.image_url is not None:
+        # Solo eliminar la imagen antigua si se está cambiando a una nueva imagen diferente
+        if product_data.image_url != product.image_url and product.image_url:
+            storage_service.delete_file(product.image_url)
         product.image_url = product_data.image_url
     
     if product_data.is_active is not None:
@@ -913,6 +1016,9 @@ async def delete_product(
     Solo administradores.
     
     Requiere autenticación y rol de administrador.
+    
+    Nota: Para eliminar productos permanentemente (hard delete), use el endpoint
+    DELETE /products/admin/{product_id}/permanent
     """
     # Verificar que el usuario sea administrador
     if not current_user.is_admin:
@@ -946,10 +1052,216 @@ async def delete_product(
     return {
         "success": True,
         "status_code": 200,
-        "message": "Producto eliminado exitosamente",
+        "message": "Producto desactivado exitosamente",
         "data": {
             "id": product.id,
             "name": product.name,
             "is_active": product.is_active
+        }
+    }
+
+
+@router.delete("/admin/{product_id}/permanent")
+async def delete_product_permanent(
+    product_id: int,
+    force: bool = Query(False, description="Forzar eliminación incluso si tiene órdenes asociadas"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Eliminar producto permanentemente (hard delete).
+    Solo administradores.
+    
+    ⚠️ PRECAUCIÓN: Esta acción es IRREVERSIBLE.
+    
+    Por defecto, NO se puede eliminar un producto que tenga órdenes asociadas
+    (para mantener el historial de compras).
+    
+    Use el parámetro ?force=true para forzar la eliminación de productos con órdenes.
+    Esto NO eliminará las órdenes, solo desvinculará el producto.
+    
+    Casos de uso:
+    - Limpiar productos de prueba
+    - Eliminar productos duplicados
+    - Eliminar productos inactivos sin órdenes
+    """
+    # Verificar que el usuario sea administrador
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "status_code": 403,
+                "message": "No tienes permisos para realizar esta acción",
+                "error": "FORBIDDEN"
+            }
+        )
+    
+    # Buscar el producto
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "status_code": 404,
+                "message": "Producto no encontrado",
+                "error": "PRODUCT_NOT_FOUND"
+            }
+        )
+    
+    # Verificar si tiene órdenes asociadas
+    from models.order import OrderItem
+    orders_count = db.query(OrderItem).filter(OrderItem.product_id == product_id).count()
+    
+    if orders_count > 0 and not force:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "status_code": 400,
+                "message": f"No se puede eliminar el producto porque tiene {orders_count} orden(es) asociada(s)",
+                "error": "PRODUCT_HAS_ORDERS",
+                "data": {
+                    "orders_count": orders_count,
+                    "suggestion": "Use el parámetro ?force=true para forzar la eliminación"
+                }
+            }
+        )
+    
+    # Guardar datos antes de eliminar
+    product_name = product.name
+    product_image = product.image_url
+    
+    try:
+        # Eliminar el producto permanentemente
+        db.delete(product)
+        db.commit()
+        
+        # Eliminar la imagen física del disco
+        if product_image:
+            storage_service.delete_file(product_image)
+        
+        return {
+            "success": True,
+            "status_code": 200,
+            "message": "Producto eliminado permanentemente",
+            "data": {
+                "id": product_id,
+                "name": product_name,
+                "had_orders": orders_count > 0,
+                "orders_count": orders_count
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error eliminando producto {product_id}: {str(e)}")
+        
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "status_code": 500,
+                "message": "Error al eliminar producto permanentemente",
+                "error": "DATABASE_ERROR",
+                "details": str(e)
+            }
+        )
+
+
+@router.post("/admin/cleanup-inactive")
+async def cleanup_inactive_products(
+    days_inactive: int = Query(30, ge=7, description="Días de inactividad mínimos"),
+    dry_run: bool = Query(True, description="Solo simular, no eliminar"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Limpiar productos inactivos sin órdenes asociadas.
+    Solo administradores.
+    
+    Por defecto ejecuta en modo dry_run (simulación) para ver qué se eliminaría.
+    Use ?dry_run=false para ejecutar la limpieza real.
+    
+    Parámetros:
+    - days_inactive: Productos inactivos por al menos N días (default: 30)
+    - dry_run: Si es true, solo simula sin eliminar (default: true)
+    
+    Criterios:
+    - Producto está inactivo (is_active = false)
+    - No tiene órdenes asociadas
+    - Fue desactivado hace más de N días
+    """
+    from models.order import OrderItem
+    from datetime import datetime, timedelta
+    
+    # Calcular fecha límite
+    cutoff_date = datetime.utcnow() - timedelta(days=days_inactive)
+    
+    # Buscar productos inactivos sin órdenes
+    inactive_products = db.query(Product).filter(
+        Product.is_active == False,
+        Product.updated_at < cutoff_date
+    ).all()
+    
+    products_to_delete = []
+    products_with_orders = []
+    
+    for product in inactive_products:
+        # Verificar si tiene órdenes
+        orders_count = db.query(OrderItem).filter(
+            OrderItem.product_id == product.id
+        ).count()
+        
+        if orders_count == 0:
+            products_to_delete.append({
+                "id": product.id,
+                "name": product.name,
+                "image_url": product.image_url,
+                "updated_at": product.updated_at.isoformat() if product.updated_at else None
+            })
+        else:
+            products_with_orders.append({
+                "id": product.id,
+                "name": product.name,
+                "orders_count": orders_count
+            })
+    
+    # Si no es dry_run, eliminar productos
+    deleted_count = 0
+    if not dry_run and products_to_delete:
+        for product_data in products_to_delete:
+            try:
+                product = db.query(Product).filter(Product.id == product_data["id"]).first()
+                if product:
+                    # Eliminar imagen física
+                    if product.image_url:
+                        storage_service.delete_file(product.image_url)
+                    # Eliminar producto
+                    db.delete(product)
+                    deleted_count += 1
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error eliminando producto {product_data['id']}: {str(e)}")
+                continue
+        
+        db.commit()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": f"{'Simulación completada' if dry_run else f'Limpieza completada: {deleted_count} productos eliminados'}",
+        "data": {
+            "dry_run": dry_run,
+            "days_inactive": days_inactive,
+            "cutoff_date": cutoff_date.isoformat(),
+            "products_to_delete": products_to_delete,
+            "products_with_orders": products_with_orders,
+            "total_deletable": len(products_to_delete),
+            "total_with_orders": len(products_with_orders),
+            "deleted_count": deleted_count if not dry_run else 0
         }
     }

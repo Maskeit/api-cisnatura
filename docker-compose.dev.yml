@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "true"  # ← Instalar dev tools en desarrollo
     container_name: cisnatura_app_dev
     ports:
       - "8000:8000"
@@ -23,7 +25,8 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app
-      - uploads_data:/app/uploads
+      - ./scripts:/app/scripts
+      - /Users/alejandre/Developer/cisnatura-ecommerce/uploads:/app/uploads
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 

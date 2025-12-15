@@ -649,6 +649,7 @@ async def delete_user_admin(
     Elimina el usuario y todas sus relaciones (órdenes, direcciones, carrito).
     
     Nota: Se recomienda usar ban/unban en su lugar para soft delete.
+    Si el usuario tiene órdenes con productos que ya no existen, esto podría fallar.
     """
     user = db.query(User).filter(User.id == user_id).first()
     
@@ -687,15 +688,38 @@ async def delete_user_admin(
             }
         )
     
-    # Eliminar usuario (cascade eliminará órdenes, direcciones, etc.)
-    db.delete(user)
-    db.commit()
-    
-    return {
-        "success": True,
-        "status_code": 200,
-        "message": "Usuario eliminado permanentemente"
-    }
+    # Intentar eliminar con manejo de errores
+    try:
+        # Eliminar usuario (cascade eliminará órdenes, direcciones, etc.)
+        db.delete(user)
+        db.commit()
+        
+        return {
+            "success": True,
+            "status_code": 200,
+            "message": "Usuario eliminado permanentemente",
+            "data": {
+                "deleted_user_id": str(user_id),
+                "email": user.email
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        # Logear el error para debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error eliminando usuario {user_id}: {str(e)}")
+        
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "status_code": 500,
+                "message": "Error al eliminar usuario. Esto puede deberse a restricciones de base de datos.",
+                "error": "DATABASE_ERROR",
+                "details": str(e) if current_user.is_admin else "Contacte al administrador del sistema"
+            }
+        )
 
 
 @router.get("/admin/stats")

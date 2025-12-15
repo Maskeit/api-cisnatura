@@ -15,7 +15,11 @@ class StorageService:
     """Servicio para gestionar el almacenamiento de archivos."""
     
     def __init__(self):
-        self.base_dir = Path("/app/uploads")
+        # Obtener ruta base desde variable de entorno o usar default
+        # En producción con bind mounts: /home/admin/cisnatura/uploads
+        # En desarrollo con volumen: /app/uploads
+        upload_dir = os.getenv("UPLOAD_DIR", "/app/uploads")
+        self.base_dir = Path(upload_dir)
         self.products_dir = self.base_dir / "products"
         self.categories_dir = self.base_dir / "categories"
         
@@ -159,25 +163,40 @@ class StorageService:
         """
         Eliminar un archivo de imagen.
         Acepta tanto rutas completas como solo nombres de archivo.
+        Ejemplos:
+            - "/static/products/uuid.webp"
+            - "products/uuid.webp"
+            - "uuid.webp"
         """
         if not filename:
             return False
         
+        # Normalizar la ruta: eliminar /static/ si está presente
+        if filename.startswith("/static/"):
+            filename = filename.replace("/static/", "", 1)
+        
         # Extraer solo el nombre del archivo si viene con ruta
-        filename = Path(filename).name
+        filename = str(filename).split('/')[-1]
         
         # Buscar en productos
         product_path = self.products_dir / filename
         if product_path.exists():
-            product_path.unlink()
-            return True
+            try:
+                product_path.unlink()
+                return True
+            except Exception:
+                return False
         
         # Buscar en categorías
         category_path = self.categories_dir / filename
         if category_path.exists():
-            category_path.unlink()
-            return True
+            try:
+                category_path.unlink()
+                return True
+            except Exception:
+                return False
         
+        # Si no encontró el archivo, retorna False pero no falla
         return False
 
 

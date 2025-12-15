@@ -68,6 +68,16 @@ logs/
 htmlcov/
 .tox/
 .nox/
+tests/__pycache__/
+tests/*.pyc
+tests/*.pyo
+tests/.pytest_cache/
+test-results.xml
+bandit-report.json
+safety-report.json
+report.html
+.hypothesis/
+.coverage.*
 
 # OS
 Thumbs.db
@@ -86,3 +96,10 @@ dmypy.json
 
 # Redis dump
 dump.rdb
+
+# carpeta de imagenes
+uploads/
+app/uploads/
+
+# scripts de texto o json
+/scripts/*.json

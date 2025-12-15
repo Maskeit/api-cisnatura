@@ -11,14 +11,22 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar el archivo de dependencias
-COPY requirements.txt .
+# Copiar archivos de dependencias desde la raíz (al directorio padre)
+WORKDIR /
+COPY requirements.txt requirements-dev.txt ./
 
 # Instalar las dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar la aplicación principal (ahora incluye Alembic)
-COPY ./app /app
+# Argument para instalar dev tools (por defecto false)
+ARG INSTALL_DEV=false
+RUN if [ "$INSTALL_DEV" = "true" ] ; then pip install --no-cache-dir -r requirements-dev.txt ; fi
+
+# Volver al directorio de trabajo
+WORKDIR /app
+
+# Copiar la aplicación
+COPY ./app .
 
 # Exponer el puerto 8000
 EXPOSE 8000

@@ -426,7 +426,9 @@ async def _handle_refund(db: Session, payment_intent_id: str, refund_amount: flo
                 db.commit()
                 logger.info(f"Order {order.id} refunded, stock restored")
                 return
-        except Exception:
+        except Exception as e:
+            # Log error pero continúa buscando en otras órdenes
+            logger.debug(f"Error checking order {order.id} for refund: {str(e)}")
             continue
     
     logger.warning(f"No order found for refunded payment_intent: {payment_intent_id}")

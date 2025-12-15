@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import os
 from pathlib import Path
+from contextlib import asynccontextmanager
 from core.config import settings
 from core.database import get_db
 from models.admin_settings import AdminSettings
@@ -21,6 +22,9 @@ from routes.user import router as user_router
 from routes.admin_settings import router as admin_settings_router
 from routes.public_settings import router as public_settings_router
 from routes.payments import router as payments_router
+
+# Tareas automáticas
+from core.tasks import start_scheduler, stop_scheduler
 
 # Inicializar Firebase Admin SDK
 from core.firebase_service import firebase_service
@@ -51,6 +55,19 @@ docs_url = "/docs" if os.getenv("ENV") == "development" else None
 redoc_url = "/redoc" if os.getenv("ENV") == "development" else None
 openapi_url = "/openapi.json" if os.getenv("ENV") == "development" else None
 
+# ==================== LIFESPAN EVENTS ====================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Gestiona el startup y shutdown de la aplicación.
+    """
+    # Startup
+    start_scheduler()
+    yield
+    # Shutdown
+    stop_scheduler()
+
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
@@ -58,7 +75,8 @@ app = FastAPI(
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,
-    redirect_slashes=False  # Evita redirects 307
+    redirect_slashes=False,  # Evita redirects 307
+    lifespan=lifespan  # Agregar lifespan
 )
 
 # CORS config
