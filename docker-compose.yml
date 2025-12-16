@@ -22,7 +22,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app
-      - /Users/alejandre/Developer/cisnatura-ecommerce/uploads:/app/uploads
+      - /home/admin/cisnatura/uploads:/app/uploads
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
