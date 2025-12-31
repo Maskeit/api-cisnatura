@@ -1,5 +1,12 @@
 """
 Dependencias de autenticación para FastAPI.
+
+Soporta dos métodos de autenticación:
+1. Bearer Token (Authorization header) - API tradicional
+2. HttpOnly Cookies - Más seguro para SPAs (protegido contra XSS)
+
+El sistema intenta primero leer de cookies HttpOnly, 
+luego fallback a Bearer token para compatibilidad.
 """
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -8,45 +15,63 @@ from typing import Optional
 from core.database import get_db
 from core.security import decode_token
 from core.redis_service import TokenBlacklistService
+from core.cookie_auth import get_access_token_from_request
 from models.user import User
 import uuid
 
 
 # Security scheme personalizado para JWT con mensajes de error consistentes
 class CustomHTTPBearer(HTTPBearer):
-    async def __call__(self, request: Request) -> HTTPAuthorizationCredentials:
+    """
+    Bearer scheme que NO falla si no hay token.
+    La verificación real se hace en get_current_user que también revisa cookies.
+    """
+    async def __call__(self, request: Request) -> Optional[HTTPAuthorizationCredentials]:
         try:
             return await super().__call__(request)
         except HTTPException:
-            # Capturar el error de FastAPI y lanzar uno con nuestro formato
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "success": False,
-                    "status_code": 401,
-                    "message": "Token de autenticación requerido",
-                    "error": "AUTHENTICATION_REQUIRED"
-                },
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            # No lanzar error aquí - permitir que get_current_user revise cookies
+            return None
 
 
-security = CustomHTTPBearer()
+security = CustomHTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
     """
-    Obtener el usuario actual desde el token JWT.
+    Obtener el usuario actual desde cookies HttpOnly o Bearer token.
+    
+    Prioridad de autenticación:
+    1. Cookie HttpOnly 'access_token' (más seguro, recomendado para SPAs)
+    2. Header 'Authorization: Bearer <token>' (compatibilidad con APIs)
     
     Uso:
         @router.get("/me")
         async def get_me(current_user: User = Depends(get_current_user)):
             return current_user
     """
-    token = credentials.credentials
+    # Intentar obtener token de cookies HttpOnly primero, luego de Bearer header
+    token = get_access_token_from_request(request)
+    
+    # Fallback: si no hay token en cookies, usar el del Bearer header
+    if not token and credentials:
+        token = credentials.credentials
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Token de autenticación requerido",
+                "error": "AUTHENTICATION_REQUIRED"
+            },
+            headers={"WWW-Authenticate": "Bearer"}
+        )
     
     # Decodificar token
     payload = decode_token(token)
@@ -164,11 +189,14 @@ async def get_current_admin_user(
 
 
 async def get_optional_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db)
 ) -> Optional[User]:
     """
     Obtener el usuario actual si está autenticado, sino retornar None.
+    
+    Soporta cookies HttpOnly y Bearer token.
     
     Útil para endpoints públicos que cambian su comportamiento si el usuario está autenticado.
     
@@ -185,14 +213,25 @@ async def get_optional_current_user(
                 # Mostrar precios normales
                 pass
     """
-    if not credentials:
+    # Intentar obtener token de cookies primero
+    token = get_access_token_from_request(request)
+    
+    # Fallback a Bearer header
+    if not token and credentials:
+        token = credentials.credentials
+    
+    if not token:
         return None
     
     try:
-        token = credentials.credentials
         payload = decode_token(token)
         
         if not payload:
+            return None
+        
+        # Verificar si el token está revocado
+        token_jti = payload.get("jti")
+        if token_jti and TokenBlacklistService.is_token_revoked(token_jti):
             return None
         
         user_id_str = payload.get("sub")

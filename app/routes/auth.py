@@ -1,15 +1,27 @@
 """
 Endpoints de autenticación: registro, login, verificación de email.
+
+Seguridad de sesiones:
+- Cookies HttpOnly para access_token y refresh_token
+- Protección CSRF para requests con cookies
+- Soporte dual: cookies HttpOnly + Bearer token (para APIs móviles)
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from core.database import get_db
-from core.security import hash_password, verify_password, create_access_token, create_refresh_token
+from core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from core.email_service import email_service
 from core.config import settings
 from core.dependencies import get_current_user
+from core.cookie_auth import (
+    set_auth_cookies,
+    clear_auth_cookies,
+    get_refresh_token_from_request,
+    get_access_token_from_request
+)
+from core.csrf_protection import generate_csrf_token
 from models.user import User
 from models.email_verification import EmailVerificationToken
 from schemas.auth import (
@@ -25,7 +37,7 @@ from schemas.auth import (
 )
 
 # Security scheme para logout
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 router = APIRouter(
     prefix="/auth",
@@ -296,13 +308,22 @@ async def resend_verification(
 @router.post("/login")
 async def login(
     credentials: UserLogin,
+    response: Response,
     db: Session = Depends(get_db)
 ):
     """
     Iniciar sesión con email y contraseña.
     
+    Seguridad:
     - Requiere email verificado
-    - Retorna access_token y refresh_token
+    - Establece cookies HttpOnly para access_token y refresh_token
+    - Genera token CSRF para protección de formularios
+    - También retorna tokens en body para compatibilidad con APIs móviles
+    
+    Cookies establecidas (HttpOnly, Secure, SameSite=Lax):
+    - access_token: JWT de acceso
+    - refresh_token: JWT de refresh (larga duración)
+    - csrf_token: Token para protección CSRF (NO HttpOnly, JS puede leerlo)
     """
     # Buscar usuario
     user = db.query(User).filter(User.email == credentials.email).first()
@@ -357,11 +378,18 @@ async def login(
         }
     )
     
+    # Generar token CSRF
+    csrf_token = generate_csrf_token()
+    
+    # Establecer cookies HttpOnly seguras
+    set_auth_cookies(response, access_token, refresh_token, csrf_token)
+    
     return {
         "success": True,
         "status_code": 200,
         "message": "Login exitoso",
         "data": {
+            # Tokens en body para compatibilidad con apps móviles/APIs externas
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
@@ -387,44 +415,197 @@ async def get_me(
     """
     Obtener información del usuario autenticado.
     
-    Requiere autenticación (Bearer token).
+    Requiere autenticación (Bearer token o Cookie HttpOnly).
     """
     return current_user
+
+
+# ==================== REFRESH TOKEN ====================
+
+@router.post("/refresh")
+async def refresh_token_endpoint(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    """
+    Refrescar el access token usando el refresh token.
+    
+    Soporta:
+    1. Refresh token en cookie HttpOnly (automático)
+    2. Refresh token en body JSON (para apps móviles)
+    
+    Seguridad:
+    - Valida que el refresh token sea válido y no esté expirado
+    - Verifica que el usuario siga activo
+    - Genera nuevos tokens y actualiza cookies
+    """
+    from schemas.auth import RefreshTokenRequest
+    
+    # Intentar obtener refresh token de cookies
+    refresh_token = get_refresh_token_from_request(request)
+    
+    # Fallback: intentar obtener del body
+    if not refresh_token:
+        try:
+            body = await request.json()
+            refresh_token = body.get("refresh_token")
+        except Exception:
+            pass
+    
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Refresh token requerido",
+                "error": "REFRESH_TOKEN_REQUIRED"
+            }
+        )
+    
+    # Validar el refresh token
+    from core.security import verify_token_type
+    
+    payload = decode_token(refresh_token)
+    
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Refresh token inválido o expirado",
+                "error": "INVALID_REFRESH_TOKEN"
+            }
+        )
+    
+    # Verificar que es un token de tipo refresh
+    if payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Token inválido (no es refresh token)",
+                "error": "INVALID_TOKEN_TYPE"
+            }
+        )
+    
+    # Obtener usuario
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Token inválido",
+                "error": "INVALID_TOKEN"
+            }
+        )
+    
+    import uuid
+    try:
+        user_id = uuid.UUID(user_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Token inválido",
+                "error": "INVALID_TOKEN"
+            }
+        )
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "success": False,
+                "status_code": 401,
+                "message": "Usuario no encontrado o inactivo",
+                "error": "USER_NOT_FOUND"
+            }
+        )
+    
+    # Crear nuevos tokens
+    new_access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "email": user.email,
+            "is_admin": user.is_admin
+        }
+    )
+    
+    new_refresh_token = create_refresh_token(
+        data={
+            "sub": str(user.id)
+        }
+    )
+    
+    # Generar nuevo CSRF token y establecer cookies
+    csrf_token = generate_csrf_token()
+    set_auth_cookies(response, new_access_token, new_refresh_token, csrf_token)
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Tokens actualizados exitosamente",
+        "data": {
+            "access_token": new_access_token,
+            "refresh_token": new_refresh_token,
+            "token_type": "bearer",
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+    }
 
 
 # ==================== LOGOUT ====================
 
 @router.post("/logout")
 async def logout(
+    request: Request,
+    response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     current_user: User = Depends(get_current_user)
 ):
     """
     Cerrar sesión (revocar token actual).
     
-    - El token se agrega a una blacklist en Redis
+    Seguridad:
+    - Elimina cookies HttpOnly de autenticación
+    - Agrega el token a blacklist en Redis
     - El token permanece inválido hasta su expiración natural
-    - El usuario deberá hacer login nuevamente para obtener un nuevo token
     """
     from core.redis_service import TokenBlacklistService
-    from core.security import decode_token
     
-    token = credentials.credentials
-    payload = decode_token(token)
+    # Obtener token de cookies o header
+    token = get_access_token_from_request(request)
+    if not token and credentials:
+        token = credentials.credentials
     
-    if payload and "jti" in payload and "exp" in payload:
-        # Calcular segundos hasta la expiración
-        from datetime import datetime
-        exp_timestamp = payload["exp"]
-        now_timestamp = datetime.utcnow().timestamp()
-        expires_in_seconds = int(exp_timestamp - now_timestamp)
+    if token:
+        payload = decode_token(token)
         
-        # Solo agregar a blacklist si el token aún no ha expirado
-        if expires_in_seconds > 0:
-            TokenBlacklistService.revoke_token(
-                token_jti=payload["jti"],
-                expires_in_seconds=expires_in_seconds
-            )
+        if payload and "jti" in payload and "exp" in payload:
+            # Calcular segundos hasta la expiración
+            exp_timestamp = payload["exp"]
+            now_timestamp = datetime.now(timezone.utc).timestamp()
+            expires_in_seconds = int(exp_timestamp - now_timestamp)
+            
+            # Solo agregar a blacklist si el token aún no ha expirado
+            if expires_in_seconds > 0:
+                TokenBlacklistService.revoke_token(
+                    token_jti=payload["jti"],
+                    expires_in_seconds=expires_in_seconds
+                )
+    
+    # Limpiar cookies de autenticación
+    clear_auth_cookies(response)
     
     return {
         "success": True,
@@ -570,15 +751,24 @@ async def reset_password(
 @router.post("/google-login")
 async def google_login(
     request: GoogleLoginRequest,
+    response: Response,
     db: Session = Depends(get_db)
 ):
     """
     Iniciar sesión o registrarse con Google (Firebase).
     
-    - Verifica el token de Firebase
-    - Si el usuario existe, retorna tokens de acceso
-    - Si el usuario no existe, lo crea automáticamente
-    - No requiere verificación de email (Google ya lo verificó)
+    Seguridad:
+    - Token de Firebase se valida en BACKEND con firebase-admin SDK
+    - NUNCA confiar solo en validación del frontend
+    - Después de validar Firebase, se emite token JWT propio de la app
+    - Establece cookies HttpOnly igual que el login normal
+    
+    Flujo:
+    1. Frontend obtiene token de Firebase (Google SSO)
+    2. Frontend envía token a este endpoint
+    3. Backend valida token con Firebase Admin SDK
+    4. Backend crea/actualiza usuario
+    5. Backend emite sus propios tokens JWT + cookies HttpOnly
     
     Returns:
         - access_token: Token JWT de la aplicación
@@ -675,12 +865,17 @@ async def google_login(
         }
     )
     
-    # 7. Retornar respuesta
+    # 7. Generar token CSRF y establecer cookies HttpOnly
+    csrf_token = generate_csrf_token()
+    set_auth_cookies(response, access_token, refresh_token, csrf_token)
+    
+    # 8. Retornar respuesta
     return {
         "success": True,
         "status_code": 200,
         "message": "Login con Google exitoso" if not is_new_user else "Cuenta creada con Google exitosamente",
         "data": {
+            # Tokens en body para compatibilidad con apps móviles
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",

@@ -79,20 +79,26 @@ app = FastAPI(
     lifespan=lifespan  # Agregar lifespan
 )
 
-# CORS config
-cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
+# CORS config - IMPORTANTE: allow_credentials=True necesario para cookies HttpOnly
+cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "https://cisnaturatienda.com")
 if cors_origins.strip() == "*":
-    allow_origins = ["*"]
+    allow_origins = ["https://cisnaturatienda.com"]
 else:
     allow_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=True,
+    allow_credentials=True,  # Requerido para cookies cross-origin
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-CSRF-Token"],  # Incluir header CSRF
 )
+
+# ==================== CSRF PROTECTION MIDDLEWARE ====================
+# Descomenta la siguiente línea para habilitar protección CSRF
+# Solo necesario si el frontend usa exclusivamente cookies (no Bearer token en header)
+# from core.csrf_protection import CSRFMiddleware
+# app.add_middleware(CSRFMiddleware)
 
 # ==================== MAINTENANCE MODE MIDDLEWARE ====================
 
