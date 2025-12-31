@@ -95,10 +95,11 @@ app.add_middleware(
 )
 
 # ==================== CSRF PROTECTION MIDDLEWARE ====================
-# Descomenta la siguiente línea para habilitar protección CSRF
-# Solo necesario si el frontend usa exclusivamente cookies (no Bearer token en header)
-# from core.csrf_protection import CSRFMiddleware
-# app.add_middleware(CSRFMiddleware)
+# Protección CSRF activada automáticamente en producción
+# En desarrollo (ENV=development) no es necesario porque estás en localhost
+if os.getenv("ENV") != "development":
+    from core.csrf_protection import CSRFMiddleware
+    app.add_middleware(CSRFMiddleware)
 
 # ==================== MAINTENANCE MODE MIDDLEWARE ====================
 
