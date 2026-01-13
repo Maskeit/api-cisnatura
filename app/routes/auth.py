@@ -394,12 +394,12 @@ async def login(
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            # Usuario: solo datos para UI, NO exponer is_admin/is_active
+            # El frontend puede decodificar el JWT para obtener is_admin si necesita
             "user": {
                 "id": str(user.id),
                 "email": user.email,
                 "full_name": user.full_name,
-                "is_active": user.is_active,
-                "is_admin": user.is_admin,
                 "email_verified": user.email_verified
             }
         }
@@ -880,12 +880,12 @@ async def google_login(
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            # Usuario: solo datos para UI, NO exponer is_admin/is_active
+            # El frontend puede decodificar el JWT para obtener is_admin si necesita
             "user": {
                 "id": str(user.id),
                 "email": user.email,
                 "full_name": user.full_name,
-                "is_active": user.is_active,
-                "is_admin": user.is_admin,
                 "email_verified": user.email_verified,
                 "auth_provider": user.auth_provider,
                 "profile_image": user.profile_image
