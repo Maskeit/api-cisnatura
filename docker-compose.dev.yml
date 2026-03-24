@@ -26,7 +26,7 @@ services:
     volumes:
       - ./app:/app
       - ./scripts:/app/scripts
-      - /Users/alejandre/Developer/cisnatura-ecommerce/uploads:/app/uploads
+      - /Users/malejandre/Developer/cisnatura/uploads:/app/uploads
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
