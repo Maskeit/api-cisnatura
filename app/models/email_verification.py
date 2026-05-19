@@ -18,7 +18,7 @@ class EmailVerificationToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relación con User
-    user = relationship("User", backref="verification_tokens")
+    user = relationship("User", back_populates="verification_tokens")
     
     @staticmethod
     def generate_token() -> str:
