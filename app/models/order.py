@@ -29,7 +29,7 @@ class Order(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    address_id = Column(Integer, ForeignKey("addresses.id"), nullable=False, index=True)
+    address_id = Column(Integer, ForeignKey("addresses.id"), nullable=True, index=True)  # Nullable para órdenes digitales
     
     # Información de pago
     payment_method = Column(SQLEnum(PaymentMethod), nullable=False, default=PaymentMethod.STRIPE)

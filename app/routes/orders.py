@@ -98,27 +98,11 @@ async def create_order(
             }
         )
     
-    # Validar que la dirección pertenezca al usuario
-    address = db.query(Address).filter(
-        Address.id == order_data.address_id,
-        Address.user_id == current_user.id
-    ).first()
-    
-    if not address:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "success": False,
-                "status_code": 404,
-                "message": "Dirección no encontrada",
-                "error": "ADDRESS_NOT_FOUND"
-            }
-        )
-    
-    # Validar productos y calcular totales
+    # Validar productos y calcular totales primero (para saber si la orden es digital)
     order_items_data = []
     subtotal = Decimal("0.00")
     category_ids = []
+    all_digital = True  # Se asume digital hasta que se encuentre un producto físico
     
     for product_id_str, cart_item in cart_data.items():
         product_id = int(product_id_str)
@@ -136,24 +120,25 @@ async def create_order(
                 }
             )
         
-        # Validar stock
-        if product.stock < quantity:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "success": False,
-                    "status_code": 400,
-                    "message": f"Stock insuficiente para {product.name}. Disponible: {product.stock}",
-                    "error": "INSUFFICIENT_STOCK"
-                }
-            )
+        if not product.is_digital:
+            all_digital = False
+            # Validar stock solo para productos físicos
+            if product.stock < quantity:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "success": False,
+                        "status_code": 400,
+                        "message": f"Stock insuficiente para {product.name}. Disponible: {product.stock}",
+                        "error": "INSUFFICIENT_STOCK"
+                    }
+                )
+            if product.category_id not in category_ids:
+                category_ids.append(product.category_id)
         
         # Calcular subtotal del item
         item_subtotal = Decimal(str(product.price)) * quantity
         subtotal += item_subtotal
-        
-        if product.category_id not in category_ids:
-            category_ids.append(product.category_id)
         
         order_items_data.append({
             "product_id": product.id,
@@ -161,19 +146,52 @@ async def create_order(
             "product_sku": product.sku,
             "quantity": quantity,
             "unit_price": Decimal(str(product.price)),
-            "subtotal": item_subtotal
+            "subtotal": item_subtotal,
+            "is_digital": product.is_digital
         })
     
-    # Calcular costo de envío según configuración del admin
+    # Validar dirección solo si hay productos físicos en la orden
+    address_id = None
+    if not all_digital:
+        if not order_data.address_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "status_code": 400,
+                    "message": "Se requiere dirección de envío para productos físicos",
+                    "error": "ADDRESS_REQUIRED"
+                }
+            )
+        address = db.query(Address).filter(
+            Address.id == order_data.address_id,
+            Address.user_id == current_user.id
+        ).first()
+        if not address:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "success": False,
+                    "status_code": 404,
+                    "message": "Dirección no encontrada",
+                    "error": "ADDRESS_NOT_FOUND"
+                }
+            )
+        address_id = order_data.address_id
+    
+    # Calcular costo de envío (solo para productos físicos)
     from core.discount_service import get_shipping_price
-    shipping_info = get_shipping_price(db, float(subtotal), category_ids)
-    shipping_cost = Decimal(str(shipping_info["shipping_price"]))
+    if all_digital:
+        shipping_cost = Decimal("0.00")
+    else:
+        shipping_info = get_shipping_price(db, float(subtotal), category_ids)
+        shipping_cost = Decimal(str(shipping_info["shipping_price"]))
     total = subtotal + shipping_cost
     
     # Crear orden en estado PENDING (esperando que se abra el checkout)
     new_order = Order(
         user_id=current_user.id,
-        address_id=order_data.address_id,
+        address_id=address_id,
         payment_method=PaymentMethod(order_data.payment_method),
         status=OrderStatus.PENDING,  # PENDING = orden creada pero no se abrió checkout
         payment_status="awaiting_checkout",  # Indica que falta abrir el checkout
@@ -189,15 +207,17 @@ async def create_order(
     
     # Crear items de la orden
     for item_data in order_items_data:
+        is_digital = item_data.pop("is_digital")  # Sacar antes de crear OrderItem
         order_item = OrderItem(
             order_id=new_order.id,
             **item_data
         )
         db.add(order_item)
         
-        # Reducir stock del producto
-        product = db.query(Product).filter(Product.id == item_data["product_id"]).first()
-        product.stock -= item_data["quantity"]
+        # Reducir stock solo para productos físicos
+        if not is_digital:
+            product = db.query(Product).filter(Product.id == item_data["product_id"]).first()
+            product.stock -= item_data["quantity"]
     
     db.commit()
     db.refresh(new_order)

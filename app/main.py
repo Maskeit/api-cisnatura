@@ -22,6 +22,7 @@ from routes.user import router as user_router
 from routes.admin_settings import router as admin_settings_router
 from routes.public_settings import router as public_settings_router
 from routes.payments import router as payments_router
+from routes.protocols import router as protocols_router
 
 # Tareas automáticas
 from core.tasks import start_scheduler, stop_scheduler
@@ -243,6 +244,7 @@ app.include_router(admin_settings_router)
 app.include_router(public_settings_router)
 app.include_router(user_router)
 app.include_router(payments_router)
+app.include_router(protocols_router)
 
 # Configurar directorio de uploads para servir archivos estáticos
 # IMPORTANTE: Debe ir después de los routers para no capturar las rutas de API

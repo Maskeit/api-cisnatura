@@ -192,6 +192,55 @@ async def upload_category_image(
     }
 
 
+@router.post("/protocols", status_code=201)
+async def upload_protocol_file(
+    file: UploadFile = File(..., description="Archivo de imagen o PDF"),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """
+    Subir archivo para protocolo (solo administradores).
+    Acepta imágenes (JPG, PNG, WebP) y PDFs.
+    """
+    file_ext = Path(file.filename).suffix.lower()
+    
+    if file_ext == ".pdf":
+        # Validar tamaño para PDFs (máximo 10MB)
+        contents = await file.read()
+        if len(contents) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "status_code": 400,
+                    "message": "El PDF no debe superar los 10MB",
+                    "error": "FILE_TOO_LARGE"
+                }
+            )
+        # Guardar PDF directamente
+        upload_path = UPLOAD_DIR / "protocols"
+        upload_path.mkdir(parents=True, exist_ok=True)
+        unique_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = upload_path / unique_filename
+        with open(file_path, "wb") as f:
+            f.write(contents)
+        file_url = f"/static/protocols/{unique_filename}"
+    else:
+        # Validar y guardar como imagen
+        validate_image(file)
+        file_url = await save_image(file, subfolder="protocols")
+    
+    return {
+        "success": True,
+        "status_code": 201,
+        "message": "Archivo subido exitosamente",
+        "data": {
+            "file_url": file_url,
+            "filename": file.filename,
+            "content_type": file.content_type
+        }
+    }
+
+
 @router.delete("/")
 async def delete_file(
     file_path: str,

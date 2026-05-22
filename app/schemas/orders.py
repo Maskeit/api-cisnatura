@@ -55,7 +55,7 @@ class OrderItemResponse(BaseModel):
 
 class OrderCreate(BaseModel):
     """Crear orden desde el carrito"""
-    address_id: int = Field(..., description="ID de la dirección de envío")
+    address_id: Optional[int] = Field(None, description="ID de la dirección de envío (no requerido para productos digitales)")
     payment_method: str = Field(default="stripe", description="Método de pago")
     notes: Optional[str] = Field(None, max_length=500, description="Notas del cliente")
     
@@ -72,7 +72,7 @@ class OrderResponse(BaseModel):
     """Respuesta completa de orden"""
     id: int
     user_id: str
-    address_id: int
+    address_id: Optional[int] = None  # None para órdenes solo digitales
     
     # Información de pago
     payment_method: str
