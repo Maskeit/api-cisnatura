@@ -5,6 +5,7 @@ from .carts import Cart
 from .order import Order, OrderItem, CartItem
 from .email_verification import EmailVerificationToken
 from .admin_settings import AdminSettings
+from .protocols import Protocol, ProtocolPhase, ProtocolResource, ProtocolProgress, ProtocolAccess
 
 __all__ = [
     "User",
@@ -17,4 +18,9 @@ __all__ = [
     "CartItem",
     "EmailVerificationToken",
     "AdminSettings",
+    "Protocol",
+    "ProtocolPhase",
+    "ProtocolResource",
+    "ProtocolProgress",
+    "ProtocolAccess",
 ]

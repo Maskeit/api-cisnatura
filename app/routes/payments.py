@@ -42,61 +42,92 @@ async def create_stripe_checkout_session(
         address_id = checkout_data.get("address_id")
         payment_method = checkout_data.get("payment_method", "stripe")
         notes = checkout_data.get("notes")
-        
-        if not address_id:
-            raise HTTPException(status_code=400, detail="address_id es requerido")
-        
-        cart_service = CartService()
-        cart_data = cart_service.get_cart(str(current_user.id))
-        
+
+        cart_data = CartService.get_cart(str(current_user.id))
         if not cart_data:
             raise HTTPException(status_code=400, detail="El carrito está vacío")
-        
-        address = db.query(Address).filter(
-            Address.id == address_id,
-            Address.user_id == current_user.id
-        ).first()
-        
-        if not address:
-            raise HTTPException(status_code=404, detail="Dirección no encontrada")
-        
+
         items = []
         subtotal = Decimal("0.00")
         category_ids = []
+        has_physical_item = False
         admin_settings = db.query(AdminSettings).first()
-        
-        for product_id_str, cart_item in cart_data.items():
-            product_id = int(product_id_str)
+
+        from models.protocols import Protocol
+
+        for cart_item in cart_data.values():
+            item_type = cart_item["item_type"]
+            item_id = cart_item["id"]
             quantity = cart_item["quantity"]
-            product = db.query(Product).filter(Product.id == product_id).first()
-            
+
+            # ---------- PROTOCOLO (digital: sin stock, sin envío, sin descuentos) ----------
+            if item_type == "protocol":
+                protocol = db.query(Protocol).filter(
+                    Protocol.id == item_id,
+                    Protocol.is_published == True
+                ).first()
+                if not protocol:
+                    raise HTTPException(status_code=404, detail=f"Protocolo {item_id} no disponible")
+
+                price = float(protocol.price)
+                subtotal += Decimal(str(price)) * quantity
+                items.append({
+                    "title": protocol.name,
+                    "quantity": quantity,
+                    "unit_price": price,
+                    "currency_id": "MXN"
+                })
+                continue
+
+            # ---------- PRODUCTO ----------
+            product = db.query(Product).filter(Product.id == item_id).first()
+
             if not product or not product.is_active:
-                raise HTTPException(status_code=404, detail=f"Producto {product_id} no disponible")
-            
-            if product.stock < quantity:
+                raise HTTPException(status_code=404, detail=f"Producto {item_id} no disponible")
+
+            # Stock solo aplica a productos físicos
+            if not product.is_digital and product.stock < quantity:
                 raise HTTPException(status_code=400, detail=f"Stock insuficiente: {product.name}")
-            
+
+            # Solo los físicos afectan el envío
+            if not product.is_digital:
+                has_physical_item = True
+                if product.category_id not in category_ids:
+                    category_ids.append(product.category_id)
+
             if admin_settings:
                 final_price, _ = calculate_product_discount(product, admin_settings)
             else:
                 final_price = float(product.price)
-            
+
             item_subtotal = Decimal(str(final_price)) * quantity
             subtotal += item_subtotal
-            
-            if product.category_id not in category_ids:
-                category_ids.append(product.category_id)
-            
+
             items.append({
                 "title": product.name,
                 "quantity": quantity,
                 "unit_price": float(final_price),
                 "currency_id": "MXN"
             })
-        
-        shipping_info = get_shipping_price(db, float(subtotal), category_ids)
-        shipping_cost = Decimal(str(shipping_info["shipping_price"]))
-        
+
+        # Dirección requerida solo si hay productos físicos
+        if has_physical_item:
+            if not address_id:
+                raise HTTPException(status_code=400, detail="Se requiere dirección de envío para productos físicos")
+            address = db.query(Address).filter(
+                Address.id == address_id,
+                Address.user_id == current_user.id
+            ).first()
+            if not address:
+                raise HTTPException(status_code=404, detail="Dirección no encontrada")
+
+        # Envío $0 para órdenes 100% digitales
+        if not has_physical_item:
+            shipping_cost = Decimal("0.00")
+        else:
+            shipping_info = get_shipping_price(db, float(subtotal), category_ids)
+            shipping_cost = Decimal(str(shipping_info["shipping_price"]))
+
         if shipping_cost > 0:
             items.append({
                 "title": "Envío",
@@ -104,16 +135,9 @@ async def create_stripe_checkout_session(
                 "unit_price": float(shipping_cost),
                 "currency_id": "MXN"
             })
-        elif shipping_info["is_free"]:
-            items.append({
-                "title": "Envío Gratis 🎉",
-                "quantity": 1,
-                "unit_price": 0.0,
-                "currency_id": "MXN"
-            })
-        
+
         total = subtotal + shipping_cost
-        
+
         result = payment_service.provider.create_payment(
             amount=total,
             currency="MXN",
@@ -125,12 +149,15 @@ async def create_stripe_checkout_session(
                 "success_url": f"{settings.FRONTEND_URL}/checkout/stripe/success?session_id={{CHECKOUT_SESSION_ID}}",
                 "failure_url": f"{settings.FRONTEND_URL}/checkout/stripe/cancel",
                 "user_id": str(current_user.id),
-                "address_id": str(address_id),
+                "address_id": str(address_id) if address_id else "",
                 "payment_method": payment_method,
                 "notes": notes or "",
                 "subtotal": str(subtotal),
                 "shipping_cost": str(shipping_cost),
                 "total": str(total),
+                # Snapshot del carrito en metadata para recuperar órdenes si Redis se vacía.
+                # Guarda el formato normalizado completo (item_type, id, quantity).
+                "cart_snapshot": json.dumps(cart_data),
             }
         )
         
@@ -200,7 +227,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         signature = request.headers.get("stripe-signature", "")
         
         webhook_secret = settings.STRIPE_WEBHOOK_SECRET
-        if webhook_secret and signature:
+        is_dev = settings.ENV == "development"
+        if webhook_secret and signature and not is_dev:
             try:
                 import stripe
                 event = stripe.Webhook.construct_event(payload, signature, webhook_secret)
@@ -209,6 +237,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=400, detail="Invalid signature")
         else:
             event = json.loads(payload)
+            if is_dev:
+                logger.info("Dev mode: skipping Stripe webhook signature verification")
         
         event_type = event.get("type")
         event_data = event.get("data", {}).get("object", {})
@@ -253,31 +283,46 @@ async def _process_payment_success(
     session_data: dict,
     metadata: dict
 ):
-    """Procesa pago exitoso y crea orden"""
+    """Procesa pago exitoso: crea orden, order items, desbloquea protocolos."""
+    from models.protocols import Protocol, ProtocolAccess as ProtocolAccessModel
+
     user_id = metadata.get("user_id")
-    address_id = int(metadata.get("address_id", 0))
+    if not user_id:
+        logger.error(f"Missing user_id for session {session_id}")
+        return
+
+    # address_id es opcional para órdenes digitales
+    address_id_raw = metadata.get("address_id", "")
+    address_id = int(address_id_raw) if address_id_raw and address_id_raw.lstrip("-").isdigit() and int(address_id_raw) > 0 else None
+
     payment_method = metadata.get("payment_method", "stripe")
-    notes = metadata.get("notes")
+    notes = metadata.get("notes") or None
     subtotal = Decimal(metadata.get("subtotal", "0"))
     shipping_cost = Decimal(metadata.get("shipping_cost", "0"))
     total = Decimal(metadata.get("total", "0"))
-    
-    if not user_id or not address_id:
-        logger.error(f"Missing user_id or address_id for session {session_id}")
-        return
-    
+
     existing_order = db.query(Order).filter(Order.payment_id == session_id).first()
     if existing_order:
         logger.info(f"Order already exists for session {session_id}")
         return
-    
-    cart_service = CartService()
-    cart_data = cart_service.get_cart(user_id)
-    
+
+    # Intentar carrito de Redis; si está vacío usar snapshot del metadata
+    cart_data = CartService.get_cart(user_id)
     if not cart_data:
-        logger.error(f"Cart empty for user {user_id}")
+        snapshot_raw = metadata.get("cart_snapshot", "")
+        if snapshot_raw:
+            try:
+                # _normalize soporta tanto el formato nuevo (item_type/id/quantity)
+                # como el legacy (solo product_id) de sesiones anteriores.
+                cart_data = CartService._normalize(json.loads(snapshot_raw))
+                logger.info(f"Cart recovered from metadata snapshot for session {session_id}")
+            except Exception:
+                pass
+
+    if not cart_data:
+        logger.error(f"Cart empty and no snapshot for user {user_id} on session {session_id}")
         return
-    
+
     new_order = Order(
         user_id=user_id,
         address_id=address_id,
@@ -292,42 +337,90 @@ async def _process_payment_success(
         notes=notes,
         paid_at=datetime.now()
     )
-    
     db.add(new_order)
     db.flush()
-    
-    for product_id_str, cart_item in cart_data.items():
-        product_id = int(product_id_str)
+
+    for cart_item in cart_data.values():
+        item_type = cart_item["item_type"]
+        item_id = cart_item["id"]
         quantity = cart_item["quantity"]
-        product = db.query(Product).filter(Product.id == product_id).first()
-        
-        if product:
+
+        # ---------- PROTOCOLO: crea order item digital y otorga acceso ----------
+        if item_type == "protocol":
+            protocol = db.query(Protocol).filter(Protocol.id == item_id).first()
+            if not protocol:
+                logger.warning(f"Protocol {item_id} not found during order creation")
+                continue
+
             order_item = OrderItem(
                 order_id=new_order.id,
-                product_id=product.id,
-                product_name=product.name,
-                product_sku=product.sku,
+                item_type="protocol",
+                product_id=None,
+                protocol_id=protocol.id,
+                product_name=protocol.name,
+                product_sku=None,
                 quantity=quantity,
-                unit_price=Decimal(str(product.price)),
-                subtotal=Decimal(str(product.price)) * quantity
+                unit_price=Decimal(str(protocol.price)),
+                subtotal=Decimal(str(protocol.price)) * quantity
             )
             db.add(order_item)
+            db.flush()
+
+            # Otorgar acceso (idempotente)
+            existing_access = db.query(ProtocolAccessModel).filter(
+                ProtocolAccessModel.protocol_id == protocol.id,
+                ProtocolAccessModel.user_id == user_id,
+                ProtocolAccessModel.is_active == True
+            ).first()
+            if not existing_access:
+                db.add(ProtocolAccessModel(
+                    protocol_id=protocol.id,
+                    user_id=user_id,
+                    order_id=new_order.id,
+                    order_item_id=order_item.id,
+                    is_active=True,
+                    access_until=None,
+                ))
+                logger.info(f"ProtocolAccess created: protocol={protocol.id}, user={user_id}")
+            continue
+
+        # ---------- PRODUCTO ----------
+        product = db.query(Product).filter(Product.id == item_id).first()
+
+        if not product:
+            logger.warning(f"Product {item_id} not found during order creation")
+            continue
+
+        order_item = OrderItem(
+            order_id=new_order.id,
+            item_type="product",
+            product_id=product.id,
+            protocol_id=None,
+            product_name=product.name,
+            product_sku=product.sku,
+            quantity=quantity,
+            unit_price=Decimal(str(product.price)),
+            subtotal=Decimal(str(product.price)) * quantity
+        )
+        db.add(order_item)
+        db.flush()
+
+        # Solo descontar stock en productos físicos
+        if not product.is_digital:
             product.stock -= quantity
-    
+
     db.commit()
     db.refresh(new_order)
-    cart_service.clear_cart(user_id)
-    
+    CartService.clear_cart(user_id)
+
     logger.info(f"Order {new_order.id} created from session {session_id}")
-    
+
     # Enviar notificaciones por correo
     try:
-        # Obtener datos del usuario y dirección para los correos
         user = db.query(User).filter(User.id == user_id).first()
-        address = db.query(Address).filter(Address.id == address_id).first()
-        
-        if user and address:
-            # Preparar items para el correo
+        address = db.query(Address).filter(Address.id == address_id).first() if address_id else None
+
+        if user:
             email_items = []
             for item in new_order.order_items:
                 email_items.append({
@@ -336,17 +429,15 @@ async def _process_payment_success(
                     "price": float(item.unit_price),
                     "subtotal": float(item.subtotal)
                 })
-            
-            # Preparar dirección para el correo
+
             shipping_address = {
                 "street": address.street,
                 "city": address.city,
                 "state": address.state,
                 "postal_code": address.postal_code,
                 "country": address.country
-            }
-            
-            # 1. Enviar confirmación al cliente
+            } if address else None
+
             await notification_service.send_order_confirmation_to_customer(
                 customer_email=user.email,
                 customer_name=user.full_name,
@@ -359,16 +450,14 @@ async def _process_payment_success(
                 shipping_address=shipping_address
             )
             logger.info(f"Customer notification sent for order {new_order.id}")
-            
-            # 2. Enviar notificación al admin
+
             admin_settings = db.query(AdminSettings).first()
             if admin_settings and hasattr(admin_settings, 'admin_notification_email'):
                 admin_email = admin_settings.admin_notification_email
             else:
-                # Fallback: obtener email del primer admin
                 admin_user = db.query(User).filter(User.is_admin == True).first()
                 admin_email = admin_user.email if admin_user else None
-            
+
             if admin_email:
                 await notification_service.send_new_order_notification_to_admin(
                     admin_email=admin_email,
@@ -381,9 +470,8 @@ async def _process_payment_success(
                     payment_method="Stripe"
                 )
                 logger.info(f"Admin notification sent for order {new_order.id}")
-            
+
     except Exception as email_error:
-        # Log error pero no falla la creación de la orden
         logger.error(f"Error sending notification emails for order {new_order.id}: {str(email_error)}")
 
 
@@ -432,6 +520,51 @@ async def _handle_refund(db: Session, payment_intent_id: str, refund_amount: flo
             continue
     
     logger.warning(f"No order found for refunded payment_intent: {payment_intent_id}")
+
+
+@router.post("/stripe/recover-session/{session_id}")
+async def recover_stripe_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Re-procesa una sesión de Stripe ya pagada cuya orden no se creó.
+    Útil cuando el webhook falló (CLI desconectado, error de red, etc.).
+    Solo administradores.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    try:
+        result = payment_service.provider.get_payment_status(session_id)
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail=f"Sesión no encontrada: {result.get('error')}")
+
+        raw = result.get("raw_response")
+        if not raw:
+            raise HTTPException(status_code=400, detail="No se pudo obtener datos de la sesión")
+
+        payment_status = getattr(raw, "payment_status", None)
+        if payment_status != "paid":
+            raise HTTPException(status_code=400, detail=f"La sesión no está pagada (status: {payment_status})")
+
+        existing = db.query(Order).filter(Order.payment_id == session_id).first()
+        if existing:
+            return {"success": True, "message": f"La orden ya existe (ID: {existing.id})", "order_id": existing.id}
+
+        metadata = dict(getattr(raw, "metadata", {}))
+        await _process_payment_success(db, session_id, {}, metadata)
+
+        order = db.query(Order).filter(Order.payment_id == session_id).first()
+        return {
+            "success": True,
+            "message": "Orden creada y protocolos desbloqueados",
+            "order_id": order.id if order else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error recovering session {session_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/cancel/{payment_id}")

@@ -29,7 +29,7 @@ class Order(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    address_id = Column(Integer, ForeignKey("addresses.id"), nullable=False, index=True)
+    address_id = Column(Integer, ForeignKey("addresses.id"), nullable=True, index=True)  # Nullable para órdenes digitales
     
     # Información de pago
     payment_method = Column(SQLEnum(PaymentMethod), nullable=False, default=PaymentMethod.STRIPE)
@@ -66,22 +66,29 @@ class OrderItem(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=False, index=True)
-    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
-    
-    # Snapshot del producto al momento de la compra
-    product_name = Column(String(255), nullable=False)  # Nombre del producto
-    product_sku = Column(String(100), nullable=True)    # SKU
-    
+
+    # Tipo de item: "product" (físico/tienda) o "protocol" (digital, otorga acceso)
+    item_type = Column(String(20), nullable=False, default="product", index=True)
+
+    # Referencia polimórfica: SOLO uno de los dos está poblado según item_type.
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True, index=True)
+    protocol_id = Column(Integer, ForeignKey("protocols.id"), nullable=True, index=True)
+
+    # Snapshot del item al momento de la compra
+    product_name = Column(String(255), nullable=False)  # Nombre del producto/protocolo
+    product_sku = Column(String(100), nullable=True)    # SKU (null para protocolos)
+
     # Cantidades y precios
     quantity = Column(Integer, nullable=False)
     unit_price = Column(Numeric(10, 2), nullable=False)  # Precio unitario al momento de la compra
     subtotal = Column(Numeric(10, 2), nullable=False)    # quantity * unit_price
-    
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     order = relationship("Order", back_populates="order_items")
     product = relationship("Product", back_populates="order_items")
+    protocol = relationship("Protocol")
 
 
 class CartItem(Base):
