@@ -53,13 +53,37 @@ async def create_stripe_checkout_session(
         has_physical_item = False
         admin_settings = db.query(AdminSettings).first()
 
-        for product_id_str, cart_item in cart_data.items():
-            product_id = int(product_id_str)
+        from models.protocols import Protocol
+
+        for cart_item in cart_data.values():
+            item_type = cart_item["item_type"]
+            item_id = cart_item["id"]
             quantity = cart_item["quantity"]
-            product = db.query(Product).filter(Product.id == product_id).first()
+
+            # ---------- PROTOCOLO (digital: sin stock, sin envío, sin descuentos) ----------
+            if item_type == "protocol":
+                protocol = db.query(Protocol).filter(
+                    Protocol.id == item_id,
+                    Protocol.is_published == True
+                ).first()
+                if not protocol:
+                    raise HTTPException(status_code=404, detail=f"Protocolo {item_id} no disponible")
+
+                price = float(protocol.price)
+                subtotal += Decimal(str(price)) * quantity
+                items.append({
+                    "title": protocol.name,
+                    "quantity": quantity,
+                    "unit_price": price,
+                    "currency_id": "MXN"
+                })
+                continue
+
+            # ---------- PRODUCTO ----------
+            product = db.query(Product).filter(Product.id == item_id).first()
 
             if not product or not product.is_active:
-                raise HTTPException(status_code=404, detail=f"Producto {product_id} no disponible")
+                raise HTTPException(status_code=404, detail=f"Producto {item_id} no disponible")
 
             # Stock solo aplica a productos físicos
             if not product.is_digital and product.stock < quantity:
@@ -131,10 +155,9 @@ async def create_stripe_checkout_session(
                 "subtotal": str(subtotal),
                 "shipping_cost": str(shipping_cost),
                 "total": str(total),
-                # Snapshot del carrito en metadata para recuperar órdenes si Redis se vacía
-                "cart_snapshot": json.dumps({
-                    pid: {"quantity": item["quantity"]} for pid, item in cart_data.items()
-                }),
+                # Snapshot del carrito en metadata para recuperar órdenes si Redis se vacía.
+                # Guarda el formato normalizado completo (item_type, id, quantity).
+                "cart_snapshot": json.dumps(cart_data),
             }
         )
         
@@ -289,7 +312,9 @@ async def _process_payment_success(
         snapshot_raw = metadata.get("cart_snapshot", "")
         if snapshot_raw:
             try:
-                cart_data = json.loads(snapshot_raw)
+                # _normalize soporta tanto el formato nuevo (item_type/id/quantity)
+                # como el legacy (solo product_id) de sesiones anteriores.
+                cart_data = CartService._normalize(json.loads(snapshot_raw))
                 logger.info(f"Cart recovered from metadata snapshot for session {session_id}")
             except Exception:
                 pass
@@ -315,34 +340,33 @@ async def _process_payment_success(
     db.add(new_order)
     db.flush()
 
-    for product_id_str, cart_item in cart_data.items():
-        product_id = int(product_id_str)
+    for cart_item in cart_data.values():
+        item_type = cart_item["item_type"]
+        item_id = cart_item["id"]
         quantity = cart_item["quantity"]
-        product = db.query(Product).filter(Product.id == product_id).first()
 
-        if not product:
-            logger.warning(f"Product {product_id} not found during order creation")
-            continue
+        # ---------- PROTOCOLO: crea order item digital y otorga acceso ----------
+        if item_type == "protocol":
+            protocol = db.query(Protocol).filter(Protocol.id == item_id).first()
+            if not protocol:
+                logger.warning(f"Protocol {item_id} not found during order creation")
+                continue
 
-        order_item = OrderItem(
-            order_id=new_order.id,
-            product_id=product.id,
-            product_name=product.name,
-            product_sku=product.sku,
-            quantity=quantity,
-            unit_price=Decimal(str(product.price)),
-            subtotal=Decimal(str(product.price)) * quantity
-        )
-        db.add(order_item)
-        db.flush()
+            order_item = OrderItem(
+                order_id=new_order.id,
+                item_type="protocol",
+                product_id=None,
+                protocol_id=protocol.id,
+                product_name=protocol.name,
+                product_sku=None,
+                quantity=quantity,
+                unit_price=Decimal(str(protocol.price)),
+                subtotal=Decimal(str(protocol.price)) * quantity
+            )
+            db.add(order_item)
+            db.flush()
 
-        # Solo descontar stock en productos físicos
-        if not product.is_digital:
-            product.stock -= quantity
-
-        # Desbloquear protocolo si este producto está vinculado a uno
-        protocol = db.query(Protocol).filter(Protocol.product_id == product.id).first()
-        if protocol:
+            # Otorgar acceso (idempotente)
             existing_access = db.query(ProtocolAccessModel).filter(
                 ProtocolAccessModel.protocol_id == protocol.id,
                 ProtocolAccessModel.user_id == user_id,
@@ -358,6 +382,32 @@ async def _process_payment_success(
                     access_until=None,
                 ))
                 logger.info(f"ProtocolAccess created: protocol={protocol.id}, user={user_id}")
+            continue
+
+        # ---------- PRODUCTO ----------
+        product = db.query(Product).filter(Product.id == item_id).first()
+
+        if not product:
+            logger.warning(f"Product {item_id} not found during order creation")
+            continue
+
+        order_item = OrderItem(
+            order_id=new_order.id,
+            item_type="product",
+            product_id=product.id,
+            protocol_id=None,
+            product_name=product.name,
+            product_sku=product.sku,
+            quantity=quantity,
+            unit_price=Decimal(str(product.price)),
+            subtotal=Decimal(str(product.price)) * quantity
+        )
+        db.add(order_item)
+        db.flush()
+
+        # Solo descontar stock en productos físicos
+        if not product.is_digital:
+            product.stock -= quantity
 
     db.commit()
     db.refresh(new_order)

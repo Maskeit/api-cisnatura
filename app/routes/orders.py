@@ -35,7 +35,9 @@ def format_order_response(order: Order, db: Session) -> dict:
     for item in order.order_items:
         items.append({
             "id": item.id,
+            "item_type": item.item_type,
             "product_id": item.product_id,
+            "protocol_id": item.protocol_id,
             "product_name": item.product_name,
             "product_sku": item.product_sku,
             "quantity": item.quantity,
@@ -98,28 +100,62 @@ async def create_order(
             }
         )
     
-    # Validar productos y calcular totales primero (para saber si la orden es digital)
+    # Validar items y calcular totales primero (para saber si la orden es digital)
+    from models.protocols import Protocol
     order_items_data = []
     subtotal = Decimal("0.00")
     category_ids = []
     all_digital = True  # Se asume digital hasta que se encuentre un producto físico
-    
-    for product_id_str, cart_item in cart_data.items():
-        product_id = int(product_id_str)
+
+    for cart_item in cart_data.values():
+        item_type = cart_item["item_type"]
+        item_id = cart_item["id"]
         quantity = cart_item["quantity"]
-        product = db.query(Product).filter(Product.id == product_id).first()
-        
+
+        # ---------- PROTOCOLO (digital: sin stock, sin envío) ----------
+        if item_type == "protocol":
+            protocol = db.query(Protocol).filter(
+                Protocol.id == item_id,
+                Protocol.is_published == True
+            ).first()
+            if not protocol:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "success": False,
+                        "status_code": 404,
+                        "message": f"Protocolo {item_id} no encontrado o no disponible",
+                        "error": "PROTOCOL_NOT_FOUND"
+                    }
+                )
+            item_subtotal = Decimal(str(protocol.price)) * quantity
+            subtotal += item_subtotal
+            order_items_data.append({
+                "item_type": "protocol",
+                "product_id": None,
+                "protocol_id": protocol.id,
+                "product_name": protocol.name,
+                "product_sku": None,
+                "quantity": quantity,
+                "unit_price": Decimal(str(protocol.price)),
+                "subtotal": item_subtotal,
+                "is_digital": True,
+            })
+            continue
+
+        # ---------- PRODUCTO ----------
+        product = db.query(Product).filter(Product.id == item_id).first()
         if not product:
             raise HTTPException(
                 status_code=404,
                 detail={
                     "success": False,
                     "status_code": 404,
-                    "message": f"Producto {product_id} no encontrado",
+                    "message": f"Producto {item_id} no encontrado",
                     "error": "PRODUCT_NOT_FOUND"
                 }
             )
-        
+
         if not product.is_digital:
             all_digital = False
             # Validar stock solo para productos físicos
@@ -135,13 +171,15 @@ async def create_order(
                 )
             if product.category_id not in category_ids:
                 category_ids.append(product.category_id)
-        
+
         # Calcular subtotal del item
         item_subtotal = Decimal(str(product.price)) * quantity
         subtotal += item_subtotal
-        
+
         order_items_data.append({
+            "item_type": "product",
             "product_id": product.id,
+            "protocol_id": None,
             "product_name": product.name,
             "product_sku": product.sku,
             "quantity": quantity,

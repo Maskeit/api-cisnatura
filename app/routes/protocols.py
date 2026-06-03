@@ -96,7 +96,6 @@ def _protocol_to_dict(protocol: Protocol, include_phases: bool = False, include_
         "long_description": protocol.long_description,
         "price": float(protocol.price),
         "image_url": protocol.image_url,
-        "product_id": protocol.product_id,
         "author": protocol.author,
         "category_id": protocol.category_id,
         "category": category_dict,
@@ -363,55 +362,18 @@ async def admin_list_protocols(
     }
 
 
-def _get_or_create_digital_category(db: Session):
-    """Obtener o crear la categoría de productos digitales."""
-    from models.products import Category as ProductCategory
-    category = db.query(ProductCategory).filter(
-        ProductCategory.slug == "protocolos-digitales"
-    ).first()
-    if not category:
-        category = ProductCategory(
-            name="Protocolos Digitales",
-            slug="protocolos-digitales",
-            description="Protocolos y cursos digitales",
-            is_active=True,
-        )
-        db.add(category)
-        db.flush()
-    return category
-
-
-def _create_digital_product_for_protocol(db: Session, name: str, slug: str, description: str, price: Decimal, image_url) -> Product:
-    """Crear un producto digital vinculado al protocolo."""
-    digital_category = _get_or_create_digital_category(db)
-    product_slug = f"protocolo-{slug}"
-    # Garantizar slug único
-    if db.query(Product).filter(Product.slug == product_slug).first():
-        import time
-        product_slug = f"protocolo-{slug}-{int(time.time())}"
-    product = Product(
-        name=name,
-        slug=product_slug,
-        description=description or name,
-        price=price,
-        stock=0,
-        category_id=digital_category.id,
-        image_url=image_url,
-        is_active=True,
-        is_digital=True,
-    )
-    db.add(product)
-    db.flush()
-    return product
-
-
 @router.post("/admin/create")
 async def create_protocol(
     protocol_data: ProtocolCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Crear nuevo protocolo (solo admin)."""
+    """Crear nuevo protocolo (solo admin).
+
+    El protocolo es una entidad vendible independiente: NO crea ni requiere
+    ningún producto. La única relación con productos es de recomendación
+    (associated_product_ids), totalmente opcional.
+    """
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Solo administradores")
 
@@ -425,19 +387,6 @@ async def create_protocol(
     if existing:
         raise HTTPException(status_code=400, detail="Ya existe un protocolo con ese slug")
 
-    # Resolver product_id: si no se provee, crear un producto digital automáticamente
-    product_id = protocol_data.product_id
-    if not product_id:
-        digital_product = _create_digital_product_for_protocol(
-            db,
-            name=protocol_data.name,
-            slug=protocol_data.slug,
-            description=protocol_data.description,
-            price=Decimal(str(protocol_data.price)),
-            image_url=protocol_data.image_url,
-        )
-        product_id = digital_product.id
-
     protocol = Protocol(
         name=protocol_data.name,
         slug=protocol_data.slug,
@@ -445,7 +394,6 @@ async def create_protocol(
         long_description=protocol_data.long_description,
         price=Decimal(str(protocol_data.price)),
         image_url=protocol_data.image_url,
-        product_id=product_id,
         category_id=protocol_data.category_id,
         author=protocol_data.author,
         version=protocol_data.version,
@@ -456,7 +404,7 @@ async def create_protocol(
     db.add(protocol)
     db.flush()
 
-    # Productos asociados
+    # Productos asociados (recomendaciones, opcional)
     if protocol_data.associated_product_ids:
         assoc_products = db.query(Product).filter(
             Product.id.in_(protocol_data.associated_product_ids)
@@ -512,20 +460,6 @@ async def update_protocol(
             value = Decimal(str(value))
         setattr(protocol, field, value)
 
-    # Sincronizar producto digital vinculado (solo si fue auto-creado: is_digital=True)
-    if protocol.product_id:
-        linked_product = db.query(Product).filter(
-            Product.id == protocol.product_id,
-            Product.is_digital == True
-        ).first()
-        if linked_product:
-            if "price" in update_data:
-                linked_product.price = Decimal(str(update_data["price"]))
-            if "name" in update_data:
-                linked_product.name = update_data["name"]
-            if "image_url" in update_data:
-                linked_product.image_url = update_data["image_url"]
-
     db.commit()
     db.refresh(protocol)
 
@@ -570,38 +504,6 @@ async def unpublish_protocol(
     protocol.is_published = False
     db.commit()
     return {"success": True, "status_code": 200, "message": f"Protocolo '{protocol.name}' despublicado", "data": {"protocol_id": protocol.id}}
-
-
-@router.post("/admin/sync-products")
-async def sync_protocol_products(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Crear productos digitales para protocolos que no tienen product_id (migración)."""
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Solo administradores")
-
-    orphan_protocols = db.query(Protocol).filter(Protocol.product_id == None).all()
-    created = []
-    for protocol in orphan_protocols:
-        digital_product = _create_digital_product_for_protocol(
-            db,
-            name=protocol.name,
-            slug=protocol.slug,
-            description=protocol.description or protocol.name,
-            price=Decimal(str(protocol.price)),
-            image_url=protocol.image_url,
-        )
-        protocol.product_id = digital_product.id
-        created.append({"protocol_id": protocol.id, "protocol_name": protocol.name, "product_id": digital_product.id})
-
-    db.commit()
-    return {
-        "success": True,
-        "status_code": 200,
-        "message": f"{len(created)} protocolo(s) sincronizados",
-        "data": {"synced": created}
-    }
 
 
 @router.delete("/admin/{protocol_id}")
@@ -929,7 +831,6 @@ async def list_protocols(
             "total_phases": len(protocol.phases),
             "price": float(protocol.price),
             "image_url": protocol.image_url,
-            "product_id": protocol.product_id,
         })
 
     return {

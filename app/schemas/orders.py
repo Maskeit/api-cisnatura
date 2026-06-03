@@ -38,15 +38,17 @@ class OrderItemBase(BaseModel):
 
 
 class OrderItemResponse(BaseModel):
-    """Respuesta de item de orden"""
+    """Respuesta de item de orden (producto o protocolo)"""
     id: int
-    product_id: int
+    item_type: str = "product"           # "product" | "protocol"
+    product_id: Optional[int] = None     # poblado si item_type == product
+    protocol_id: Optional[int] = None    # poblado si item_type == protocol
     product_name: str
     product_sku: Optional[str]
     quantity: int
     unit_price: Decimal
     subtotal: Decimal
-    
+
     class Config:
         from_attributes = True
 

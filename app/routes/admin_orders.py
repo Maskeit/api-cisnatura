@@ -57,7 +57,9 @@ def format_order_admin_response(order: Order, db: Session) -> dict:
     for item in order.order_items:
         items.append({
             "id": item.id,
+            "item_type": item.item_type,
             "product_id": item.product_id,
+            "protocol_id": item.protocol_id,
             "product_name": item.product_name,
             "product_sku": item.product_sku,
             "quantity": item.quantity,

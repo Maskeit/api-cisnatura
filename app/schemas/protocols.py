@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 
 
@@ -128,8 +129,9 @@ class ProtocolBase(BaseModel):
 
 class ProtocolCreate(ProtocolBase):
     """Crear protocolo"""
-    product_id: Optional[int] = None  # Producto principal vinculado (opcional)
-    associated_product_ids: Optional[List[int]] = []  # Productos relacionados/usados en el protocolo
+    # associated_product_ids = productos RECOMENDADOS para seguir el protocolo (opcional).
+    # NO es un requisito: un protocolo se crea y se vende sin ningún producto.
+    associated_product_ids: Optional[List[int]] = []
     phases: Optional[List[ProtocolPhaseCreate]] = []
     
     @validator('slug')
@@ -158,7 +160,6 @@ class ProtocolUpdate(BaseModel):
 class ProtocolResponse(ProtocolBase):
     """Respuesta de protocolo"""
     id: int
-    product_id: Optional[int] = None
     is_published: bool
     category: ProtocolCategoryResponse  # Categoría completa
     phases: List[ProtocolPhaseResponse] = []
@@ -181,7 +182,7 @@ class ProtocolProgressResponse(BaseModel):
     """Respuesta de progreso"""
     id: int
     protocol_id: int
-    user_id: str
+    user_id: UUID
     current_phase_order: int
     completed_phases: int
     total_phases: int
@@ -204,7 +205,7 @@ class ProtocolAccessResponse(BaseModel):
     """Respuesta de acceso"""
     id: int
     protocol_id: int
-    user_id: str
+    user_id: UUID
     order_id: int
     order_item_id: int
     is_active: bool
@@ -230,7 +231,6 @@ class ProtocolListItem(BaseModel):
     total_phases: int = 0
     price: float = 0.0
     image_url: Optional[str] = None
-    product_id: Optional[int] = None
 
     class Config:
         from_attributes = True

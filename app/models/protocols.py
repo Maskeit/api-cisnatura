@@ -57,13 +57,10 @@ class Protocol(Base):
     description = Column(Text)  # Descripción breve (resumen para listing)
     long_description = Column(Text)  # Descripción larga (en la página del protocolo)
     
-    # Precio e imagen propios del protocolo (es un producto independiente)
+    # Precio e imagen propios del protocolo (es una entidad vendible independiente)
     price = Column(Numeric(10, 2), nullable=False, default=0)
     image_url = Column(Text, nullable=True)
-    
-    # Producto principal vinculado (opcional)
-    product_id = Column(Integer, ForeignKey("products.id"), nullable=True, index=True)
-    
+
     # Categoría del protocolo
     category_id = Column(Integer, ForeignKey("protocol_categories.id"), nullable=False, index=True)
     
@@ -81,7 +78,8 @@ class Protocol(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relaciones
-    product = relationship("Product", foreign_keys=[product_id])
+    # NOTA: la ÚNICA relación con Product es de recomendación ("productos para seguir
+    # este protocolo"). El protocolo NO depende de ningún producto para venderse.
     associated_products = relationship("Product", secondary=protocol_product_association, lazy="selectin")
     category = relationship("ProtocolCategory", back_populates="protocols", foreign_keys=[category_id])
     phases = relationship("ProtocolPhase", back_populates="protocol", cascade="all, delete-orphan", order_by="ProtocolPhase.order")
