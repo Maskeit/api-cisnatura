@@ -17,11 +17,12 @@ from models.user import User
 from models.products import Product
 from models.protocols import Protocol, ProtocolPhase, ProtocolAccess, ProtocolProgress, ProtocolCategory, protocol_product_association
 from schemas.protocols import (
-    ProtocolListItem,
     ProtocolDetailedResponse,
     ProtocolResponse,
     ProtocolCreate,
     ProtocolUpdate,
+    ProtocolPhaseCreate,
+    ProtocolPhaseUpdate,
     ProtocolPhaseResponse,
     ProtocolUserAccessResponse,
     ProtocolProgressResponse,
@@ -39,21 +40,54 @@ router = APIRouter(
 
 # ==================== HELPER ====================
 
-def _protocol_to_dict(protocol: Protocol, include_phases: bool = False) -> dict:
-    """Serializar protocolo a dict con campos comunes."""
+def _phase_to_dict(phase: ProtocolPhase, include_content: bool = True) -> dict:
+    """Serializar fase. Sin include_content solo devuelve metadatos (título, descripción, orden)."""
+    d = {
+        "id": phase.id,
+        "protocol_id": phase.protocol_id,
+        "title": phase.title,
+        "slug": phase.slug,
+        "description": phase.description,
+        "order": phase.order,
+        "duration_minutes": phase.duration_minutes,
+        "is_required": phase.is_required,
+        "created_at": phase.created_at,
+        "updated_at": phase.updated_at,
+        "content": phase.content if include_content else "",
+        "resources": [
+            {
+                "id": r.id,
+                "phase_id": r.phase_id,
+                "resource_type": r.resource_type,
+                "title": r.title,
+                "description": r.description,
+                "url": r.url,
+                "file_path": r.file_path,
+                "order": r.order,
+                "is_visible": r.is_visible,
+                "created_at": r.created_at,
+            }
+            for r in phase.resources
+        ] if include_content else [],
+    }
+    return d
+
+
+def _protocol_to_dict(protocol: Protocol, include_phases: bool = False, include_phase_content: bool = True) -> dict:
+    """Serializar protocolo a dict con campos comunes.
+    include_phase_content=False para endpoints públicos de protocolos de pago.
+    """
     category_dict = None
     if protocol.category:
         category_dict = {
             "id": protocol.category.id,
             "name": protocol.category.name,
             "slug": protocol.category.slug,
-            "description": protocol.category.description,
-            "icon_url": protocol.category.icon_url,
             "is_active": protocol.category.is_active,
             "created_at": protocol.category.created_at,
             "updated_at": protocol.category.updated_at,
         }
-    
+
     data = {
         "id": protocol.id,
         "name": protocol.name,
@@ -70,12 +104,16 @@ def _protocol_to_dict(protocol: Protocol, include_phases: bool = False) -> dict:
         "estimated_duration_hours": protocol.estimated_duration_hours,
         "is_published": protocol.is_published,
         "is_featured": protocol.is_featured,
+        "associated_products": [
+            {"id": p.id, "name": p.name, "slug": p.slug, "image_url": p.image_url}
+            for p in protocol.associated_products
+        ],
         "associated_product_ids": [p.id for p in protocol.associated_products],
         "created_at": protocol.created_at,
         "updated_at": protocol.updated_at,
     }
     if include_phases:
-        data["phases"] = protocol.phases
+        data["phases"] = [_phase_to_dict(ph, include_content=include_phase_content) for ph in protocol.phases]
         data["total_phases"] = len(protocol.phases)
         total_duration = sum([ph.duration_minutes or 0 for ph in protocol.phases])
         data["total_duration_hours"] = total_duration / 60 if total_duration > 0 else None
@@ -149,8 +187,6 @@ async def list_categories(
                     "id": cat.id,
                     "name": cat.name,
                     "slug": cat.slug,
-                    "description": cat.description,
-                    "icon_url": cat.icon_url,
                     "is_active": cat.is_active,
                     "created_at": cat.created_at,
                     "updated_at": cat.updated_at,
@@ -184,8 +220,6 @@ async def get_category(
             "id": category.id,
             "name": category.name,
             "slug": category.slug,
-            "description": category.description,
-            "icon_url": category.icon_url,
             "is_active": category.is_active,
             "created_at": category.created_at,
             "updated_at": category.updated_at,
@@ -251,8 +285,6 @@ async def update_category(
             "id": category.id,
             "name": category.name,
             "slug": category.slug,
-            "description": category.description,
-            "icon_url": category.icon_url,
             "is_active": category.is_active,
             "updated_at": category.updated_at,
         }
@@ -331,6 +363,48 @@ async def admin_list_protocols(
     }
 
 
+def _get_or_create_digital_category(db: Session):
+    """Obtener o crear la categoría de productos digitales."""
+    from models.products import Category as ProductCategory
+    category = db.query(ProductCategory).filter(
+        ProductCategory.slug == "protocolos-digitales"
+    ).first()
+    if not category:
+        category = ProductCategory(
+            name="Protocolos Digitales",
+            slug="protocolos-digitales",
+            description="Protocolos y cursos digitales",
+            is_active=True,
+        )
+        db.add(category)
+        db.flush()
+    return category
+
+
+def _create_digital_product_for_protocol(db: Session, name: str, slug: str, description: str, price: Decimal, image_url) -> Product:
+    """Crear un producto digital vinculado al protocolo."""
+    digital_category = _get_or_create_digital_category(db)
+    product_slug = f"protocolo-{slug}"
+    # Garantizar slug único
+    if db.query(Product).filter(Product.slug == product_slug).first():
+        import time
+        product_slug = f"protocolo-{slug}-{int(time.time())}"
+    product = Product(
+        name=name,
+        slug=product_slug,
+        description=description or name,
+        price=price,
+        stock=0,
+        category_id=digital_category.id,
+        image_url=image_url,
+        is_active=True,
+        is_digital=True,
+    )
+    db.add(product)
+    db.flush()
+    return product
+
+
 @router.post("/admin/create")
 async def create_protocol(
     protocol_data: ProtocolCreate,
@@ -340,22 +414,30 @@ async def create_protocol(
     """Crear nuevo protocolo (solo admin)."""
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Solo administradores")
-    
+
     # Verificar categoría
     category = db.query(ProtocolCategory).filter(ProtocolCategory.id == protocol_data.category_id).first()
     if not category:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
-    
-    # Verificar producto principal
-    product = db.query(Product).filter(Product.id == protocol_data.product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Producto principal no encontrado")
-    
+
     # Verificar slug único
     existing = db.query(Protocol).filter(Protocol.slug == protocol_data.slug).first()
     if existing:
         raise HTTPException(status_code=400, detail="Ya existe un protocolo con ese slug")
-    
+
+    # Resolver product_id: si no se provee, crear un producto digital automáticamente
+    product_id = protocol_data.product_id
+    if not product_id:
+        digital_product = _create_digital_product_for_protocol(
+            db,
+            name=protocol_data.name,
+            slug=protocol_data.slug,
+            description=protocol_data.description,
+            price=Decimal(str(protocol_data.price)),
+            image_url=protocol_data.image_url,
+        )
+        product_id = digital_product.id
+
     protocol = Protocol(
         name=protocol_data.name,
         slug=protocol_data.slug,
@@ -363,7 +445,7 @@ async def create_protocol(
         long_description=protocol_data.long_description,
         price=Decimal(str(protocol_data.price)),
         image_url=protocol_data.image_url,
-        product_id=protocol_data.product_id,
+        product_id=product_id,
         category_id=protocol_data.category_id,
         author=protocol_data.author,
         version=protocol_data.version,
@@ -373,7 +455,7 @@ async def create_protocol(
     )
     db.add(protocol)
     db.flush()
-    
+
     # Productos asociados
     if protocol_data.associated_product_ids:
         assoc_products = db.query(Product).filter(
@@ -429,10 +511,24 @@ async def update_protocol(
         if field == "price" and value is not None:
             value = Decimal(str(value))
         setattr(protocol, field, value)
-    
+
+    # Sincronizar producto digital vinculado (solo si fue auto-creado: is_digital=True)
+    if protocol.product_id:
+        linked_product = db.query(Product).filter(
+            Product.id == protocol.product_id,
+            Product.is_digital == True
+        ).first()
+        if linked_product:
+            if "price" in update_data:
+                linked_product.price = Decimal(str(update_data["price"]))
+            if "name" in update_data:
+                linked_product.name = update_data["name"]
+            if "image_url" in update_data:
+                linked_product.image_url = update_data["image_url"]
+
     db.commit()
     db.refresh(protocol)
-    
+
     return _protocol_to_dict(protocol, include_phases=True)
 
 
@@ -476,13 +572,83 @@ async def unpublish_protocol(
     return {"success": True, "status_code": 200, "message": f"Protocolo '{protocol.name}' despublicado", "data": {"protocol_id": protocol.id}}
 
 
+@router.post("/admin/sync-products")
+async def sync_protocol_products(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Crear productos digitales para protocolos que no tienen product_id (migración)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Solo administradores")
+
+    orphan_protocols = db.query(Protocol).filter(Protocol.product_id == None).all()
+    created = []
+    for protocol in orphan_protocols:
+        digital_product = _create_digital_product_for_protocol(
+            db,
+            name=protocol.name,
+            slug=protocol.slug,
+            description=protocol.description or protocol.name,
+            price=Decimal(str(protocol.price)),
+            image_url=protocol.image_url,
+        )
+        protocol.product_id = digital_product.id
+        created.append({"protocol_id": protocol.id, "protocol_name": protocol.name, "product_id": digital_product.id})
+
+    db.commit()
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": f"{len(created)} protocolo(s) sincronizados",
+        "data": {"synced": created}
+    }
+
+
 @router.delete("/admin/{protocol_id}")
 async def delete_protocol(
     protocol_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Eliminar protocolo permanentemente (solo admin)."""
+    """Eliminar protocolo permanentemente (solo admin).
+    Bloqueado si algún usuario ya lo compró — en ese caso solo se puede desactivar/despublicar.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Solo administradores")
+
+    protocol = db.query(Protocol).filter(Protocol.id == protocol_id).first()
+    if not protocol:
+        raise HTTPException(status_code=404, detail="Protocolo no encontrado")
+
+    has_purchases = db.query(ProtocolAccess).filter(
+        ProtocolAccess.protocol_id == protocol_id
+    ).first()
+    if has_purchases:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "success": False,
+                "status_code": 409,
+                "message": "No se puede eliminar un protocolo que ya fue comprado. Usa 'Despublicar' para ocultarlo.",
+                "error": "PROTOCOL_HAS_PURCHASES"
+            }
+        )
+
+    db.delete(protocol)
+    db.commit()
+    return {"success": True, "status_code": 200, "message": "Protocolo eliminado"}
+
+
+# ==================== ADMIN ENDPOINTS - PHASES ====================
+
+@router.post("/admin/{protocol_id}/phases")
+async def create_phase(
+    protocol_id: int,
+    phase_data: ProtocolPhaseCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Crear una nueva fase en un protocolo existente (solo admin)."""
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Solo administradores")
     
@@ -490,9 +656,168 @@ async def delete_protocol(
     if not protocol:
         raise HTTPException(status_code=404, detail="Protocolo no encontrado")
     
-    db.delete(protocol)
+    # Verificar slug único dentro del protocolo
+    existing_slug = db.query(ProtocolPhase).filter(
+        ProtocolPhase.protocol_id == protocol_id,
+        ProtocolPhase.slug == phase_data.slug
+    ).first()
+    if existing_slug:
+        raise HTTPException(
+            status_code=400,
+            detail="Ya existe una fase con ese slug en este protocolo"
+        )
+    
+    # Determinar el orden
+    max_order = db.query(ProtocolPhase).filter(
+        ProtocolPhase.protocol_id == protocol_id
+    ).order_by(ProtocolPhase.order.desc()).first()
+    next_order = (max_order.order + 1) if max_order else 0
+    
+    phase = ProtocolPhase(
+        protocol_id=protocol_id,
+        title=phase_data.title,
+        slug=phase_data.slug,
+        description=phase_data.description,
+        content=phase_data.content,
+        order=phase_data.order if phase_data.order is not None else next_order,
+        duration_minutes=phase_data.duration_minutes,
+        is_required=phase_data.is_required,
+    )
+    db.add(phase)
+    db.flush()
+    
+    # Agregar recursos si existen
+    if phase_data.resources:
+        for resource_data in phase_data.resources:
+            from models.protocols import ProtocolResource
+            resource = ProtocolResource(
+                phase_id=phase.id,
+                resource_type=resource_data.resource_type,
+                title=resource_data.title,
+                description=resource_data.description,
+                url=resource_data.url,
+                order=resource_data.order,
+                is_visible=resource_data.is_visible,
+            )
+            db.add(resource)
+    
     db.commit()
-    return {"success": True, "status_code": 200, "message": "Protocolo eliminado"}
+    db.refresh(phase)
+    
+    return {
+        "success": True,
+        "status_code": 201,
+        "message": "Fase creada exitosamente",
+        "data": {
+            "id": phase.id,
+            "protocol_id": phase.protocol_id,
+            "title": phase.title,
+            "slug": phase.slug,
+            "description": phase.description,
+            "content": phase.content,
+            "order": phase.order,
+            "duration_minutes": phase.duration_minutes,
+            "is_required": phase.is_required,
+            "created_at": phase.created_at,
+        }
+    }
+
+
+@router.put("/admin/{protocol_id}/phases/{phase_id}")
+async def update_phase(
+    protocol_id: int,
+    phase_id: int,
+    phase_data: ProtocolPhaseUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Actualizar una fase específica del protocolo (solo admin)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    
+    protocol = db.query(Protocol).filter(Protocol.id == protocol_id).first()
+    if not protocol:
+        raise HTTPException(status_code=404, detail="Protocolo no encontrado")
+    
+    phase = db.query(ProtocolPhase).filter(
+        ProtocolPhase.id == phase_id,
+        ProtocolPhase.protocol_id == protocol_id
+    ).first()
+    if not phase:
+        raise HTTPException(status_code=404, detail="Fase no encontrada en este protocolo")
+    
+    update_data = phase_data.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(phase, field, value)
+    
+    db.commit()
+    db.refresh(phase)
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Fase actualizada exitosamente",
+        "data": {
+            "id": phase.id,
+            "protocol_id": phase.protocol_id,
+            "title": phase.title,
+            "slug": phase.slug,
+            "description": phase.description,
+            "content": phase.content,
+            "order": phase.order,
+            "duration_minutes": phase.duration_minutes,
+            "is_required": phase.is_required,
+            "updated_at": phase.updated_at,
+        }
+    }
+
+
+@router.delete("/admin/{protocol_id}/phases/{phase_id}")
+async def delete_phase(
+    protocol_id: int,
+    phase_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Eliminar una fase específica del protocolo (solo admin)."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    
+    protocol = db.query(Protocol).filter(Protocol.id == protocol_id).first()
+    if not protocol:
+        raise HTTPException(status_code=404, detail="Protocolo no encontrado")
+    
+    phase = db.query(ProtocolPhase).filter(
+        ProtocolPhase.id == phase_id,
+        ProtocolPhase.protocol_id == protocol_id
+    ).first()
+    if not phase:
+        raise HTTPException(status_code=404, detail="Fase no encontrada en este protocolo")
+    
+    # Verificar que no sea la única fase si el protocolo está publicado
+    if protocol.is_published and len(protocol.phases) == 1:
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede eliminar la única fase de un protocolo publicado"
+        )
+    
+    phase_title = phase.title
+    db.delete(phase)
+    
+    # Reordenar las fases restantes
+    remaining_phases = db.query(ProtocolPhase).filter(
+        ProtocolPhase.protocol_id == protocol_id
+    ).order_by(ProtocolPhase.order).all()
+    for idx, p in enumerate(remaining_phases):
+        p.order = idx
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": f"Fase '{phase_title}' eliminada exitosamente"
+    }
 
 
 # ==================== USER ENDPOINTS (rutas fijas) ====================
@@ -530,12 +855,39 @@ async def get_my_protocols(
 
 # ==================== PUBLIC ENDPOINTS ====================
 
-@router.get("/", response_model=List[ProtocolListItem])
+@router.get("/categories")
+async def list_public_categories(db: Session = Depends(get_db)):
+    """Listar categorías de protocolos activas (público)."""
+    categories = db.query(ProtocolCategory).filter(
+        ProtocolCategory.is_active == True
+    ).order_by(ProtocolCategory.name).all()
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Categorías obtenidas",
+        "data": {
+            "categories": [
+                {
+                    "id": cat.id,
+                    "name": cat.name,
+                    "slug": cat.slug,
+                    "is_active": cat.is_active,
+                    "created_at": cat.created_at,
+                    "updated_at": cat.updated_at,
+                }
+                for cat in categories
+            ]
+        }
+    }
+
+
+@router.get("/")
 async def list_protocols(
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(12, ge=1, le=100),
     category_id: Optional[int] = Query(None),
     featured_only: bool = Query(False),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Listar protocolos publicados (público)."""
@@ -544,10 +896,14 @@ async def list_protocols(
         query = query.filter(Protocol.is_featured == True)
     if category_id:
         query = query.filter(Protocol.category_id == category_id)
-    
+    if search:
+        query = query.filter(Protocol.name.ilike(f"%{search}%"))
+
+    total = query.count()
+    total_pages = max(1, -(-total // limit))
     offset = (page - 1) * limit
-    protocols = query.order_by(desc(Protocol.created_at)).offset(offset).limit(limit).all()
-    
+    protocols = query.order_by(desc(Protocol.is_featured), desc(Protocol.created_at)).offset(offset).limit(limit).all()
+
     result = []
     for protocol in protocols:
         category_dict = None
@@ -556,13 +912,11 @@ async def list_protocols(
                 "id": protocol.category.id,
                 "name": protocol.category.name,
                 "slug": protocol.category.slug,
-                "description": protocol.category.description,
-                "icon_url": protocol.category.icon_url,
                 "is_active": protocol.category.is_active,
                 "created_at": protocol.category.created_at,
                 "updated_at": protocol.category.updated_at,
             }
-        
+
         result.append({
             "id": protocol.id,
             "name": protocol.name,
@@ -575,8 +929,23 @@ async def list_protocols(
             "total_phases": len(protocol.phases),
             "price": float(protocol.price),
             "image_url": protocol.image_url,
+            "product_id": protocol.product_id,
         })
-    return result
+
+    return {
+        "success": True,
+        "status_code": 200,
+        "message": "Protocolos obtenidos",
+        "data": {
+            "protocols": result,
+            "pagination": {
+                "page": page, "limit": limit, "total": total,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_prev": page > 1,
+            }
+        }
+    }
 
 
 # ==================== WILDCARD SLUG ENDPOINTS (al final) ====================
@@ -586,15 +955,19 @@ async def get_protocol(
     protocol_slug: str,
     db: Session = Depends(get_db)
 ):
-    """Detalle público de un protocolo publicado."""
+    """Detalle público de un protocolo publicado.
+    Devuelve metadatos de fases pero NO el contenido HTML (protocolos de pago).
+    Los protocolos gratuitos (price=0) sí exponen el contenido completo.
+    """
     protocol = db.query(Protocol).filter(
         Protocol.slug == protocol_slug,
         Protocol.is_published == True
     ).first()
     if not protocol:
         raise HTTPException(status_code=404, detail={"success": False, "status_code": 404, "message": "Protocolo no encontrado", "error": "PROTOCOL_NOT_FOUND"})
-    
-    return _protocol_to_dict(protocol, include_phases=True)
+
+    is_free = float(protocol.price) == 0
+    return _protocol_to_dict(protocol, include_phases=True, include_phase_content=is_free)
 
 
 @router.get("/{protocol_slug}/read")

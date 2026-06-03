@@ -78,34 +78,37 @@ def format_cart_response(user_id: str, db: Session) -> dict:
     total_discount = 0.0
     total_without_discount = 0.0
     category_ids = []
-    
+    has_physical_item = False
+
     for product_id_str, cart_item in cart_data.items():
         product_id = int(product_id_str)
         product = products.get(product_id)
-        
+
         # Solo incluir productos activos
         if not product:
             continue
-        
-        # Recolectar category_ids para cálculo de envío
-        if product.category_id and product.category_id not in category_ids:
-            category_ids.append(product.category_id)
-        
+
+        # Solo los productos físicos cuentan para el cálculo de envío
+        if not product.is_digital:
+            has_physical_item = True
+            if product.category_id and product.category_id not in category_ids:
+                category_ids.append(product.category_id)
+
         quantity = cart_item["quantity"]
         original_price = float(product.price)
-        
+
         # Calcular descuento si hay configuración de admin
         if settings:
             final_price, discount_info = calculate_product_discount(product, settings)
         else:
             final_price = original_price
             discount_info = None
-        
+
         # Calcular subtotales
         subtotal = round(final_price * quantity, 2)
         subtotal_without_discount = round(original_price * quantity, 2)
         item_discount = round(subtotal_without_discount - subtotal, 2)
-        
+
         items.append({
             "product_id": product_id,
             "quantity": quantity,
@@ -113,28 +116,37 @@ def format_cart_response(user_id: str, db: Session) -> dict:
                 "id": product.id,
                 "name": product.name,
                 "slug": product.slug,
-                "price": final_price,  # Precio con descuento aplicado
-                "original_price": original_price,  # Precio original
+                "price": final_price,
+                "original_price": original_price,
                 "stock": product.stock,
                 "category_id": product.category_id,
                 "image_url": product.image_url,
                 "is_active": product.is_active,
+                "is_digital": product.is_digital,
                 "has_discount": discount_info is not None,
-                "discount": discount_info  # Info del descuento aplicado
+                "discount": discount_info
             },
-            "subtotal": subtotal,  # Subtotal con descuento
-            "subtotal_without_discount": subtotal_without_discount,  # Subtotal sin descuento
-            "discount_amount": item_discount  # Ahorro por item
+            "subtotal": subtotal,
+            "subtotal_without_discount": subtotal_without_discount,
+            "discount_amount": item_discount
         })
-        
+
         total_items += quantity
         total_amount += subtotal
         total_discount += item_discount
         total_without_discount += subtotal_without_discount
-    
-    # Calcular costo de envío basado en categorías y total
-    shipping_info = get_shipping_price(db, total_amount, category_ids)
-    shipping_cost = shipping_info.get("shipping_price", 0.0)
+
+    # Calcular envío: solo si hay al menos un producto físico
+    if not has_physical_item:
+        shipping_info = {
+            "shipping_price": 0.0,
+            "is_free": True,
+            "message": "Entrega digital — sin costo de envío"
+        }
+        shipping_cost = 0.0
+    else:
+        shipping_info = get_shipping_price(db, total_amount, category_ids)
+        shipping_cost = shipping_info.get("shipping_price", 0.0)
     grand_total = round(total_amount + shipping_cost, 2)
     
     return {
@@ -241,8 +253,8 @@ async def add_item_to_cart(
     current_quantity = cart_data.get(product_id_str, {}).get("quantity", 0)
     new_quantity = current_quantity + item_data.quantity
     
-    # Validar stock
-    if new_quantity > product.stock:
+    # Validar stock (los productos digitales no tienen límite de stock)
+    if not product.is_digital and new_quantity > product.stock:
         raise HTTPException(
             status_code=400,
             detail={

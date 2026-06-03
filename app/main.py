@@ -43,7 +43,7 @@ def initialize_payment_service():
     if provider == "stripe":
         payment_service.initialize(
             provider_name="stripe",
-            api_key=settings.STRIPE_API_KEY,
+            api_key=settings.STRIPE_SECRET_KEY,
             webhook_secret=settings.STRIPE_WEBHOOK_SECRET
         )
     else:

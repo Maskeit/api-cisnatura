@@ -61,8 +61,8 @@ class Protocol(Base):
     price = Column(Numeric(10, 2), nullable=False, default=0)
     image_url = Column(Text, nullable=True)
     
-    # Productos principales vinculados al protocolo
-    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, unique=True, index=True)
+    # Producto principal vinculado (opcional)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True, index=True)
     
     # Categoría del protocolo
     category_id = Column(Integer, ForeignKey("protocol_categories.id"), nullable=False, index=True)

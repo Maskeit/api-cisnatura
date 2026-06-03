@@ -514,25 +514,25 @@ async def list_products(
     - **min_price**: Precio mínimo
     - **max_price**: Precio máximo
     """
-    # Construir query base
-    query = db.query(Product).filter(Product.is_active == True)
-    
+    # Construir query base (excluir productos digitales — se venden como protocolos)
+    query = db.query(Product).filter(Product.is_active == True, Product.is_digital == False)
+
     # Aplicar filtros
     if category_id:
         query = query.filter(Product.category_id == category_id)
-    
+
     if search:
         query = query.filter(Product.name.ilike(f"%{search}%"))
-    
+
     if min_price is not None:
         query = query.filter(Product.price >= Decimal(str(min_price)))
-    
+
     if max_price is not None:
         query = query.filter(Product.price <= Decimal(str(max_price)))
-    
+
     # Contar total
     total = query.count()
-    
+
     # Aplicar paginación
     offset = (page - 1) * limit
     products = query.offset(offset).limit(limit).all()
@@ -746,8 +746,8 @@ async def list_all_products_admin(
             }
         )
     
-    # Construir query base (SIN filtrar por is_active)
-    query = db.query(Product)
+    # Construir query base (SIN filtrar por is_active, pero excluir productos digitales de protocolos)
+    query = db.query(Product).filter(Product.is_digital == False)
     
     # Aplicar filtros
     if category_id:

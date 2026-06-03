@@ -128,7 +128,7 @@ class ProtocolBase(BaseModel):
 
 class ProtocolCreate(ProtocolBase):
     """Crear protocolo"""
-    product_id: int  # Producto principal vinculado (para el carrito)
+    product_id: Optional[int] = None  # Producto principal vinculado (opcional)
     associated_product_ids: Optional[List[int]] = []  # Productos relacionados/usados en el protocolo
     phases: Optional[List[ProtocolPhaseCreate]] = []
     
@@ -158,7 +158,7 @@ class ProtocolUpdate(BaseModel):
 class ProtocolResponse(ProtocolBase):
     """Respuesta de protocolo"""
     id: int
-    product_id: int
+    product_id: Optional[int] = None
     is_published: bool
     category: ProtocolCategoryResponse  # Categoría completa
     phases: List[ProtocolPhaseResponse] = []
@@ -224,13 +224,14 @@ class ProtocolListItem(BaseModel):
     slug: str
     description: str
     author: Optional[str]
-    category: ProtocolCategoryResponse  # Categoría completa
+    category: Optional[ProtocolCategoryResponse]
     estimated_duration_hours: Optional[int]
     is_featured: bool
     total_phases: int = 0
     price: float = 0.0
     image_url: Optional[str] = None
-    
+    product_id: Optional[int] = None
+
     class Config:
         from_attributes = True
 
