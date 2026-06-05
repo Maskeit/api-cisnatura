@@ -97,6 +97,7 @@ class ProtocolPhaseUpdate(BaseModel):
     duration_minutes: Optional[int] = None
     is_required: Optional[bool] = None
     order: Optional[int] = None
+    resources: Optional[List[ProtocolResourceCreate]] = None
 
 
 class ProtocolPhaseResponse(ProtocolPhaseBase):
