@@ -424,6 +424,22 @@ async def create_protocol(
             is_required=phase_data.is_required,
         )
         db.add(phase)
+        db.flush()
+        
+        # Agregar recursos a la fase si existen
+        if phase_data.resources:
+            from models.protocols import ProtocolResource
+            for resource_data in phase_data.resources:
+                resource = ProtocolResource(
+                    phase_id=phase.id,
+                    resource_type=resource_data.resource_type,
+                    title=resource_data.title,
+                    description=resource_data.description,
+                    url=resource_data.url,
+                    order=resource_data.order,
+                    is_visible=resource_data.is_visible,
+                )
+                db.add(resource)
     
     db.commit()
     db.refresh(protocol)
@@ -610,18 +626,7 @@ async def create_phase(
         "success": True,
         "status_code": 201,
         "message": "Fase creada exitosamente",
-        "data": {
-            "id": phase.id,
-            "protocol_id": phase.protocol_id,
-            "title": phase.title,
-            "slug": phase.slug,
-            "description": phase.description,
-            "content": phase.content,
-            "order": phase.order,
-            "duration_minutes": phase.duration_minutes,
-            "is_required": phase.is_required,
-            "created_at": phase.created_at,
-        }
+        "data": _phase_to_dict(phase, include_content=True)
     }
 
 
@@ -648,9 +653,35 @@ async def update_phase(
     if not phase:
         raise HTTPException(status_code=404, detail="Fase no encontrada en este protocolo")
     
+    # Extraer recursos del modelo Pydantic ANTES de convertir a dict,
+    # para conservar los objetos tipados (dict no tiene atributos .resource_type, etc.)
+    resources_to_create = phase_data.resources  # List[ProtocolResourceCreate] | None
+
     update_data = phase_data.dict(exclude_unset=True)
+    update_data.pop("resources", None)  # eliminar para no hacer setattr con una lista de dicts
+
+    # Actualizar campos escalares de la fase
     for field, value in update_data.items():
         setattr(phase, field, value)
+
+    # Manejar recursos: si se proporciona, reemplazar todos los recursos existentes
+    if resources_to_create is not None:
+        # Eliminar recursos existentes
+        from models.protocols import ProtocolResource
+        db.query(ProtocolResource).filter(ProtocolResource.phase_id == phase_id).delete()
+
+        # Agregar nuevos recursos
+        for resource_data in resources_to_create:
+            resource = ProtocolResource(
+                phase_id=phase_id,
+                resource_type=resource_data.resource_type,
+                title=resource_data.title,
+                description=resource_data.description,
+                url=resource_data.url,
+                order=resource_data.order,
+                is_visible=resource_data.is_visible,
+            )
+            db.add(resource)
     
     db.commit()
     db.refresh(phase)
@@ -659,18 +690,7 @@ async def update_phase(
         "success": True,
         "status_code": 200,
         "message": "Fase actualizada exitosamente",
-        "data": {
-            "id": phase.id,
-            "protocol_id": phase.protocol_id,
-            "title": phase.title,
-            "slug": phase.slug,
-            "description": phase.description,
-            "content": phase.content,
-            "order": phase.order,
-            "duration_minutes": phase.duration_minutes,
-            "is_required": phase.is_required,
-            "updated_at": phase.updated_at,
-        }
+        "data": _phase_to_dict(phase, include_content=True)
     }
 
 
